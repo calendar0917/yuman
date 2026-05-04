@@ -1,0 +1,27 @@
+# yuman configuration
+# Place at: ~/.config/yuman/yuman.toml
+
+[general]
+aur_helper = "paru"   # "paru" or "yay"
+timeout = 30          # seconds per operation
+
+[managers.pacman]
+enabled = true
+
+[managers.paru]
+enabled = true
+
+[managers.pip]
+enabled = true
+
+[managers.npm]
+enabled = true
+
+[managers.pnpm]
+enabled = true
+
+[managers.cargo]
+enabled = true
+
+[managers.flatpak]
+enabled = true
