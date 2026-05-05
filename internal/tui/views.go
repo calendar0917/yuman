@@ -21,15 +21,19 @@ func (a *App) viewHelp() string {
 		{"", ""},
 		{"Dashboard", ""},
 		{"  j/k ↑ ↓   ", dr("navigate managers")},
+		{"  ctrl+d/u   ", dr("half-page down/up")},
 		{"  enter      ", dr("browse installed packages")},
 		{"  r          ", dr("reload selected manager")},
 		{"  R          ", dr("reload all managers")},
 		{"  o          ", dr("view outdated packages")},
 		{"  e          ", dr("export snapshot to TOML")},
 		{"  i          ", dr("import snapshot from TOML")},
+		{"  D          ", dr("find duplicates")},
+		{"  v          ", dr("load environment from .tools.toml")},
 		{"", ""},
 		{"Installed Packages", ""},
 		{"  j/k ↑ ↓   ", dr("navigate packages")},
+		{"  ctrl+d/u   ", dr("half-page down/up")},
 		{"  enter      ", dr("package detail")},
 		{"  u          ", dr("upgrade package")},
 		{"  x          ", dr("remove package")},
@@ -39,6 +43,7 @@ func (a *App) viewHelp() string {
 		{"  tab        ", dr("switch input ↔ results")},
 		{"  i          ", dr("install selected package")},
 		{"  f          ", dr("toggle installed-only filter")},
+		{"  0-9        ", dr("filter by manager (0 = clear)")},
 		{"", ""},
 		{"Package Detail", ""},
 		{"  i / u / x  ", dr("install / upgrade / remove")},
@@ -107,7 +112,7 @@ func (a *App) viewOutdated() string {
 
 	b.WriteString("\n")
 	if len(a.outdatedPkgs) > 0 {
-		b.WriteString(HelpStyle.Render("j/k: navigate  U: upgrade all  esc: back to dashboard"))
+		b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  U: upgrade all  esc: back to dashboard"))
 	} else {
 		b.WriteString(HelpStyle.Render("esc: back to dashboard"))
 	}
@@ -125,16 +130,48 @@ func (a *App) viewDashboard() string {
 		return b.String()
 	}
 
+	// Check if pacman is available for Arch grouping
+	pacmanAvail := false
+	for _, ms := range a.managers {
+		if ms.name == "pacman" && ms.available {
+			pacmanAvail = true
+			break
+		}
+	}
+
+	// Find max count for bar chart scaling
+	maxCount := 0
+	for _, ms := range a.managers {
+		if ms.count > maxCount {
+			maxCount = ms.count
+		}
+	}
+
+	// Group managers: show Arch family together
 	for i, ms := range a.managers {
+		// Skip yay/paru when pacman is available (they share the same DB)
+		if pacmanAvail && isArchHelper(ms.name) {
+			continue
+		}
+
 		cursor := "  "
-		if i == a.dashCursor {
-			cursor = CursorStyle.Render("▸ ")
+		isCursor := i == a.dashCursor
+		if isCursor {
+			cursor = SelectedBg.Render("▸ ")
+		}
+
+		// Icon prefix: ● for available, ✗ for unavailable
+		icon := "● "
+		if !ms.available {
+			icon = ErrorStyle.Render("✗ ")
+		} else if ms.count == -1 {
+			icon = ""
 		}
 
 		name := ms.name
 		avail := ""
 		if !ms.available {
-			avail = ErrorStyle.Render(" (not installed)")
+			avail = ErrorStyle.Render("(not installed)")
 		} else if ms.count == -1 {
 			avail = a.spinner.View() + " loading..."
 		} else if ms.count == -2 {
@@ -151,14 +188,61 @@ func (a *App) viewDashboard() string {
 			if ms.outdatedCount > 0 {
 				avail += WarningStyle.Render(fmt.Sprintf(", %d updates", ms.outdatedCount))
 			}
+			// Bar chart
+			if maxCount > 0 {
+				barLen := (ms.count * 20) / maxCount
+				if barLen > 20 {
+					barLen = 20
+				}
+				bar := strings.Repeat("█", barLen)
+				avail += " " + DimStyle.Render(bar)
+			}
 		}
 
-		line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(name), avail)
-		if i == a.dashCursor {
-			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, name)) + avail
+		line := fmt.Sprintf("%s%s%s%s", cursor, icon, ManagerTagStyle.Render(name), avail)
+		if isCursor {
+			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s%s", cursor, icon, name)) + avail
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
+	}
+
+	// Show indented AUR helpers after pacman if pacman is available
+	if pacmanAvail {
+		for _, ms := range a.managers {
+			if isArchHelper(ms.name) {
+				cursor := "  "
+				isCursor := false
+				// Find if cursor is at this helper's position
+				for idx, m := range a.managers {
+					if m.name == ms.name && idx == a.dashCursor {
+						isCursor = true
+						cursor = SelectedBg.Render("▸ ")
+						break
+					}
+				}
+
+				icon := "● "
+				if !ms.available {
+					icon = ErrorStyle.Render("✗ ")
+				}
+
+				name := "  " + ms.name // Indent under pacman
+				var avail string
+				if !ms.available {
+					avail = ErrorStyle.Render("(not installed)")
+				} else {
+					avail = DescStyle.Render("(shared with pacman)")
+				}
+
+				line := fmt.Sprintf("%s%s%s%s", cursor, icon, ManagerTagStyle.Render(name), avail)
+				if isCursor {
+					line = SelectedItemStyle.Render(fmt.Sprintf("%s%s%s", cursor, icon, name)) + avail
+				}
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
 	}
 
 	if a.dashCursor < len(a.managers) {
@@ -177,7 +261,7 @@ func (a *App) viewDashboard() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: navigate  enter: browse  /: search  r: reload  o: outdated  e: export  i: import  ?: help  q: quit"))
+	b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  enter: browse  /: search  r: reload  o: outdated  e: export  i: import  ?: help  q: quit"))
 	return b.String()
 }
 
@@ -196,7 +280,7 @@ func (a *App) viewInstalled() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: navigate  enter: detail  u: upgrade  x: remove  esc: back"))
+	b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  enter: detail  u: upgrade  x: remove  esc: back"))
 	return b.String()
 }
 
@@ -211,6 +295,9 @@ func (a *App) viewSearch() string {
 	}
 	if a.searchFilterInstalled {
 		headerText += "  [installed only]"
+	}
+	if a.searchFilterManager != "" {
+		headerText += "  [" + a.searchFilterManager + "]"
 	}
 	b.WriteString(HeaderStyle.Render(headerText))
 	b.WriteString("\n\n")
@@ -237,7 +324,7 @@ func (a *App) viewSearch() string {
 	if a.searchInputFocused {
 		b.WriteString(HelpStyle.Render("enter: search  tab: switch to results  esc: back"))
 	} else {
-		b.WriteString(HelpStyle.Render("j/k: navigate  enter/d: detail  i: install  f: filter installed  tab: switch to input  esc: back"))
+		b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  enter/d: detail  i: install  f: filter installed  0-9: filter by manager  tab: switch to input  esc: back"))
 	}
 	return b.String()
 }

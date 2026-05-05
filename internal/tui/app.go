@@ -47,6 +47,7 @@ type App struct {
 	searchLoading         int
 	searchInputFocused    bool
 	searchFilterInstalled bool
+	searchFilterManager   string
 
 	// Detail
 	detailPkg model.Package
@@ -168,11 +169,33 @@ func (a *App) loadAllManagers() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// isArchHelper returns true if the manager is an AUR helper that shares
+// pacman's database.
+func isArchHelper(name string) bool {
+	return name == "yay" || name == "paru"
+}
+
+// hasPacmanAvailable returns true if pacman is among the available managers.
+func (a *App) hasPacmanAvailable() bool {
+	for _, ms := range a.managers {
+		if ms.name == "pacman" && ms.available {
+			return true
+		}
+	}
+	return false
+}
+
 // loadOutdatedCounts fires parallel Outdated() calls for all available managers.
 func (a *App) loadOutdatedCounts() tea.Cmd {
+	pacmanAvail := a.hasPacmanAvailable()
 	var cmds []tea.Cmd
 	for _, ms := range a.managers {
 		if !ms.available || ms.count <= 0 {
+			continue
+		}
+		// Skip AUR helpers when pacman is also available (shared database)
+		if pacmanAvail && isArchHelper(ms.name) {
+			a.managers = a.setOutdatedCount(ms.name, 0)
 			continue
 		}
 		name := ms.name
@@ -198,6 +221,19 @@ func (a *App) loadOutdatedCounts() tea.Cmd {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+// setOutdatedCount sets the outdated count for the named manager and returns
+// the updated slice. This is a helper to avoid direct slice mutation in a
+// range loop.
+func (a *App) setOutdatedCount(name string, count int) []managerStatus {
+	for i := range a.managers {
+		if a.managers[i].name == name {
+			a.managers[i].outdatedCount = count
+			break
+		}
+	}
+	return a.managers
 }
 
 // reloadManager reloads a single manager by index.
@@ -398,6 +434,7 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.searching = false
 			a.searchLoading = 0
 			a.searchFilterInstalled = false
+			a.searchFilterManager = ""
 			a.searchInput.Blur()
 			return a, nil
 		}
@@ -450,6 +487,16 @@ func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
 		if a.dashCursor < len(a.managers)-1 {
 			a.dashCursor++
 		}
+	case "ctrl+d":
+		a.dashCursor += 5
+		if a.dashCursor >= len(a.managers) {
+			a.dashCursor = len(a.managers) - 1
+		}
+	case "ctrl+u":
+		a.dashCursor -= 5
+		if a.dashCursor < 0 {
+			a.dashCursor = 0
+		}
 	case "enter":
 		ms := a.managers[a.dashCursor]
 		if ms.available && ms.count > 0 {
@@ -483,6 +530,16 @@ func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
 
 func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
+	case "ctrl+d":
+		downMsg := tea.KeyPressMsg{Code: tea.KeyDown}
+		for i := 0; i < 5; i++ {
+			a.installedTable, _ = a.installedTable.Update(downMsg)
+		}
+	case "ctrl+u":
+		upMsg := tea.KeyPressMsg{Code: tea.KeyUp}
+		for i := 0; i < 5; i++ {
+			a.installedTable, _ = a.installedTable.Update(upMsg)
+		}
 	case "up", "k":
 		a.installedTable, _ = a.installedTable.Update(msg)
 	case "down", "j":
@@ -537,6 +594,20 @@ func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.C
 	}
 
 	switch key {
+	case "ctrl+d":
+		if len(a.searchPkgs) > 0 {
+			downMsg := tea.KeyPressMsg{Code: tea.KeyDown}
+			for i := 0; i < 5; i++ {
+				a.searchTable, _ = a.searchTable.Update(downMsg)
+			}
+		}
+	case "ctrl+u":
+		if len(a.searchPkgs) > 0 {
+			upMsg := tea.KeyPressMsg{Code: tea.KeyUp}
+			for i := 0; i < 5; i++ {
+				a.searchTable, _ = a.searchTable.Update(upMsg)
+			}
+		}
 	case "enter", "d":
 		if len(a.searchPkgs) > 0 {
 			row := a.searchTable.SelectedRow()
@@ -562,12 +633,43 @@ func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.C
 	case "f":
 		a.searchFilterInstalled = !a.searchFilterInstalled
 		a.updateSearchTable()
+	case "0":
+		a.searchFilterManager = ""
+		a.updateSearchTable()
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Filter by manager: pick the nth available manager
+		idx := int(key[0] - '1')
+		availMgrs := a.availableManagerNames()
+		if idx < len(availMgrs) {
+			a.searchFilterManager = availMgrs[idx]
+		}
+		a.updateSearchTable()
 	}
 	return a, nil
 }
 
+func (a *App) availableManagerNames() []string {
+	var names []string
+	for _, ms := range a.managers {
+		if ms.available {
+			names = append(names, ms.name)
+		}
+	}
+	return names
+}
+
 func (a *App) handleOutdatedKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
+	case "ctrl+d":
+		downMsg := tea.KeyPressMsg{Code: tea.KeyDown}
+		for i := 0; i < 5; i++ {
+			a.outdatedTable, _ = a.outdatedTable.Update(downMsg)
+		}
+	case "ctrl+u":
+		upMsg := tea.KeyPressMsg{Code: tea.KeyUp}
+		for i := 0; i < 5; i++ {
+			a.outdatedTable, _ = a.outdatedTable.Update(upMsg)
+		}
 	case "up", "k":
 		a.outdatedTable, _ = a.outdatedTable.Update(msg)
 	case "down", "j":
@@ -630,10 +732,22 @@ func (a *App) openDetail(pkgName, mgrName string) {
 			break
 		}
 	}
-	for _, p := range a.searchPkgs {
-		if p.Name == pkgName && p.Manager == mgrName {
-			pkg = p
-			break
+	if !pkg.Installed {
+		for _, p := range a.searchPkgs {
+			if p.Name == pkgName && p.Manager == mgrName {
+				pkg = p
+				break
+			}
+		}
+	}
+	if !pkg.Installed {
+		for _, p := range a.outdatedPkgs {
+			if p.Name == pkgName && p.Manager == mgrName {
+				pkg = p
+				pkg.Installed = true
+				pkg.Outdated = true
+				break
+			}
 		}
 	}
 
@@ -703,6 +817,7 @@ func (a *App) doSearch(query string) tea.Cmd {
 	a.searchPkgs = nil
 	a.searchLoading = 0
 	a.searchFilterInstalled = false
+	a.searchFilterManager = ""
 
 	var cmds []tea.Cmd
 	for _, ms := range a.managers {
@@ -787,8 +902,8 @@ func (a *App) updateInstalledTable() {
 		desc := p.Description
 
 		if p.Outdated {
-			name = WarningStyle.Render(p.Name)
-			version = WarningStyle.Render(p.Version + " -> " + p.Latest)
+			name = "⬆ " + name
+			version = version + " → " + p.Latest
 		}
 
 		if len(desc) > 38 {
@@ -831,6 +946,9 @@ func (a *App) updateSearchTable() {
 	rows := make([]table.Row, 0, len(a.searchPkgs))
 	for _, p := range a.searchPkgs {
 		if a.searchFilterInstalled && !p.Installed {
+			continue
+		}
+		if a.searchFilterManager != "" && p.Manager != a.searchFilterManager {
 			continue
 		}
 		name := p.Name
@@ -1009,9 +1127,9 @@ func (a *App) updateOutdatedTable() {
 	rows := make([]table.Row, 0, len(a.outdatedPkgs))
 	for _, p := range a.outdatedPkgs {
 		rows = append(rows, table.Row{
-			WarningStyle.Render(p.Name),
+			"⬆ " + p.Name,
 			p.Version,
-			WarningStyle.Render(p.Latest),
+			p.Latest,
 			p.Manager,
 		})
 	}

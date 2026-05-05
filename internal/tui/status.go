@@ -29,7 +29,7 @@ func (a *App) viewStatus() string {
 	if padding < 0 {
 		padding = 0
 	}
-	return StatusBarStyle.Render(
-		left + strings.Repeat(" ", padding) + HelpStyle.Render(right),
-	)
+	return StatusBarStyle.
+		Background(lipgloss.Color("236")).
+		Render(left + strings.Repeat(" ", padding) + HelpStyle.Render(right))
 }
