@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"charm.land/lipgloss/v2"
 )
 
 func (a *App) viewHelp() string {
@@ -61,7 +63,20 @@ func (a *App) viewHelp() string {
 		}
 	}
 
-	return DialogBoxStyle.Render(b.String())
+	// Responsive dialog width
+	dlgWidth := a.width - 10
+	if dlgWidth < 40 {
+		dlgWidth = 40
+	}
+	if dlgWidth > 60 {
+		dlgWidth = 60
+	}
+	dlgStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorAccent).
+		Padding(1, 3).
+		Width(dlgWidth)
+	return dlgStyle.Render(b.String())
 }
 
 func (a *App) viewOperation() string {
@@ -112,9 +127,9 @@ func (a *App) viewOutdated() string {
 
 	b.WriteString("\n")
 	if len(a.outdatedPkgs) > 0 {
-		b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  U: upgrade all  esc: back to dashboard"))
+		b.WriteString(HelpStyle.Render("j/k: move  U: upgrade all  esc: back"))
 	} else {
-		b.WriteString(HelpStyle.Render("esc: back to dashboard"))
+		b.WriteString(HelpStyle.Render("esc: back"))
 	}
 	return b.String()
 }
@@ -230,7 +245,7 @@ func (a *App) viewDashboard() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  enter: browse  /: search  r: reload  o: outdated  e: export  i: import  ?: help  q: quit"))
+	b.WriteString(HelpStyle.Render("j/k: move  enter: browse  /: search  o: outdated  ?: help  q: quit"))
 	return b.String()
 }
 
@@ -249,7 +264,7 @@ func (a *App) viewInstalled() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  enter: detail  u: upgrade  x: remove  esc: back"))
+	b.WriteString(HelpStyle.Render("j/k: move  enter: detail  u: upgrade  x: remove  esc: back"))
 	return b.String()
 }
 
@@ -273,8 +288,28 @@ func (a *App) viewSearch() string {
 
 	b.WriteString(SearchPromptStyle.Render("❯ "))
 	b.WriteString(a.searchInput.View())
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
+	// Show manager filter mapping
+	availMgrs := a.availableManagerNames()
+	if len(availMgrs) > 0 {
+		b.WriteString("\n")
+		b.WriteString(DescStyle.Render("  filter: [0:all]"))
+		for i, name := range availMgrs {
+			if i >= 9 {
+				break
+			}
+			mark := fmt.Sprintf(" [%d:%s]", i+1, name)
+			if a.searchFilterManager == name {
+				b.WriteString(SelectedItemStyle.Render(mark))
+			} else {
+				b.WriteString(DescStyle.Render(mark))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
 	if a.searching {
 		b.WriteString(a.spinner.View())
 		b.WriteString(" searching across all managers...")
@@ -291,9 +326,9 @@ func (a *App) viewSearch() string {
 
 	b.WriteString("\n")
 	if a.searchInputFocused {
-		b.WriteString(HelpStyle.Render("enter: search  tab: switch to results  esc: back"))
+		b.WriteString(HelpStyle.Render("enter: search  tab: results  esc: back"))
 	} else {
-		b.WriteString(HelpStyle.Render("j/k: navigate  ctrl+u/d: half-page  enter/d: detail  i: install  f: filter installed  0-9: filter by manager  tab: switch to input  esc: back"))
+		b.WriteString(HelpStyle.Render("j/k: move  ctrl+d/u: half-page  enter: detail  i: install  f: filter  tab: input  esc: back"))
 	}
 	return b.String()
 }

@@ -1047,42 +1047,40 @@ func (a *App) View() tea.View {
 		b.WriteString(a.viewHelp())
 		b.WriteString("\n")
 		b.WriteString(a.viewStatus())
-		return tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
-	}
-
-	if a.operationActive {
+	} else if a.operationActive {
 		b.WriteString(a.viewOperation())
 		b.WriteString("\n")
 		b.WriteString(a.viewStatus())
-		return tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
-	}
+	} else {
+		switch a.state {
+		case viewDashboard:
+			b.WriteString(a.viewDashboard())
+		case viewInstalled:
+			b.WriteString(a.viewInstalled())
+		case viewSearch:
+			b.WriteString(a.viewSearch())
+		case viewDetail:
+			b.WriteString(a.viewDetail())
+		case viewOutdated:
+			b.WriteString(a.viewOutdated())
+		case viewDuplicates:
+			b.WriteString(a.viewDuplicatesView())
+		case viewEnvironment:
+			b.WriteString(a.viewEnvironmentView())
+		}
 
-	switch a.state {
-	case viewDashboard:
-		b.WriteString(a.viewDashboard())
-	case viewInstalled:
-		b.WriteString(a.viewInstalled())
-	case viewSearch:
-		b.WriteString(a.viewSearch())
-	case viewDetail:
-		b.WriteString(a.viewDetail())
-	case viewOutdated:
-		b.WriteString(a.viewOutdated())
-	case viewDuplicates:
-		b.WriteString(a.viewDuplicatesView())
-	case viewEnvironment:
-		b.WriteString(a.viewEnvironmentView())
-	}
+		if a.confirmOpen {
+			b.WriteString("\n")
+			b.WriteString(a.viewConfirm())
+		}
 
-	if a.confirmOpen {
 		b.WriteString("\n")
-		b.WriteString(a.viewConfirm())
+		b.WriteString(a.viewStatus())
 	}
 
-	b.WriteString("\n")
-	b.WriteString(a.viewStatus())
-
-	return tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
+	v := tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
+	v.AltScreen = true
+	return v
 }
 
 func (a *App) loadAllOutdated() tea.Cmd {
