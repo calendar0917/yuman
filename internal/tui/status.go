@@ -7,9 +7,11 @@ import (
 )
 
 func (a *App) operationHeight() int {
-	h := a.height - 14
-	if h < 8 {
-		h = 8
+	// Conservative: use ~60% of available height
+	// Account for: title(1) + header(1) + help(1) + status(1) + border(2) + margins(~3)
+	h := (a.height * 60) / 100
+	if h < 5 {
+		h = 5
 	}
 	return h
 }
