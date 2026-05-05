@@ -35,8 +35,7 @@ nfpms:
       packager: calendar
 
 aurs:
-  - id: yuman-bin
-    name: yuman-bin
+  - name: yuman-bin
     homepage: https://github.com/calendar0917/yuman
     description: Multi-source TUI/CLI package manager for Linux
     maintainers: ["calendar <1131821081@qq.com>"]
