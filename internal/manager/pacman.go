@@ -128,3 +128,18 @@ func parsePacmanSearch(data []byte, mgr string) []model.Package {
 	}
 	return pkgs
 }
+
+func (p *pacman) InstallCmd(pkg string) (string, []string) {
+	return "pacman", []string{"-S", "--noconfirm", pkg}
+}
+
+func (p *pacman) RemoveCmd(pkg string) (string, []string) {
+	return "pacman", []string{"-R", "--noconfirm", pkg}
+}
+
+func (p *pacman) UpgradeCmd(pkg string) (string, []string) {
+	if pkg != "" {
+		return "pacman", []string{"-S", "--noconfirm", pkg}
+	}
+	return "pacman", []string{"-Syu", "--noconfirm"}
+}

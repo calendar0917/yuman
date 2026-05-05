@@ -391,6 +391,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionDoneMsg:
 		a.operationActive = false
+		// Show captured command output
+		if len(msg.output) > 0 {
+			a.operationLog = append(a.operationLog, msg.output...)
+		}
 		if msg.err != nil {
 			a.operationLog = append(a.operationLog,
 				ErrorStyle.Render(fmt.Sprintf("✗ %s %s failed: %v", msg.action, msg.pkgName, msg.err)))
@@ -860,19 +864,27 @@ func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
 			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 		defer cancel()
 
-		var err error
+		// Build the command args based on action
+		var name string
+		var args []string
 		switch action {
 		case "install":
-			err = a.backend.Install(ctx, pkg.Manager, pkg.Name)
+			name, args = m.InstallCmd(pkg.Name)
 		case "remove":
-			err = a.backend.Remove(ctx, pkg.Manager, pkg.Name)
+			name, args = m.RemoveCmd(pkg.Name)
 		case "upgrade":
-			err = a.backend.Upgrade(ctx, pkg.Manager, pkg.Name)
+			name, args = m.UpgradeCmd(pkg.Name)
 		default:
-			err = fmt.Errorf("unknown action: %s", action)
+			return actionDoneMsg{action: action, pkgName: pkg.Name,
+				err: fmt.Errorf("unknown action: %s", action)}
 		}
 
-		return actionDoneMsg{action: action, pkgName: pkg.Name, err: err}
+		var output []string
+		err := backend.StreamCmd(ctx, func(line string) {
+			output = append(output, line)
+		}, name, args...)
+
+		return actionDoneMsg{action: action, pkgName: pkg.Name, err: err, output: output}
 	}
 }
 

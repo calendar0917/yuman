@@ -114,3 +114,17 @@ func extractOldVersion(parts []string) string {
 	}
 	return ""
 }
+func (a *apt) InstallCmd(pkg string) (string, []string) {
+	return "apt", []string{"install", "-y", pkg}
+}
+
+func (a *apt) RemoveCmd(pkg string) (string, []string) {
+	return "apt", []string{"remove", "-y", pkg}
+}
+
+func (a *apt) UpgradeCmd(pkg string) (string, []string) {
+	if pkg != "" {
+		return "apt", []string{"install", "--only-upgrade", "-y", pkg}
+	}
+	return "apt", []string{"upgrade", "-y"}
+}

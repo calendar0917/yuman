@@ -20,4 +20,10 @@ type Manager interface {
 	Outdated(ctx context.Context) ([]Package, error)
 	// Upgrade upgrades a specific package, or all packages if pkg is empty.
 	Upgrade(ctx context.Context, pkg string) error
+	// InstallCmd returns the command name and args for installing a package.
+	InstallCmd(pkg string) (string, []string)
+	// RemoveCmd returns the command name and args for removing a package.
+	RemoveCmd(pkg string) (string, []string)
+	// UpgradeCmd returns the command name and args for upgrading a package.
+	UpgradeCmd(pkg string) (string, []string)
 }

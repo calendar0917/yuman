@@ -232,3 +232,18 @@ func depMapToPkgs(deps map[string]struct {
 	}
 	return pkgs
 }
+
+func (n *npm) InstallCmd(pkg string) (string, []string) {
+	return "npm", []string{"install", "-g", pkg}
+}
+
+func (n *npm) RemoveCmd(pkg string) (string, []string) {
+	return "npm", []string{"uninstall", "-g", pkg}
+}
+
+func (n *npm) UpgradeCmd(pkg string) (string, []string) {
+	if pkg != "" {
+		return "npm", []string{"install", "-g", pkg + "@latest"}
+	}
+	return "npm", []string{"update", "-g"}
+}

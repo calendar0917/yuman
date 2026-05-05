@@ -83,6 +83,7 @@ type actionDoneMsg struct {
 	action  string
 	pkgName string
 	err     error
+	output  []string
 }
 
 // operationOutputMsg carries a line of streaming output.

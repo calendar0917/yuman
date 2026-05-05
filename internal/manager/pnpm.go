@@ -56,3 +56,18 @@ func (p *pnpm) Upgrade(ctx context.Context, pkg string) error {
 	}
 	return exec.CommandContext(ctx, "pnpm", "update", "-g").Run()
 }
+
+func (p *pnpm) InstallCmd(pkg string) (string, []string) {
+	return "pnpm", []string{"add", "-g", pkg}
+}
+
+func (p *pnpm) RemoveCmd(pkg string) (string, []string) {
+	return "pnpm", []string{"remove", "-g", pkg}
+}
+
+func (p *pnpm) UpgradeCmd(pkg string) (string, []string) {
+	if pkg != "" {
+		return "pnpm", []string{"add", "-g", pkg + "@latest"}
+	}
+	return "pnpm", []string{"update", "-g"}
+}

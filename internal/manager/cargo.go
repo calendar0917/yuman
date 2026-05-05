@@ -148,3 +148,14 @@ func parseCargoOutdated(data []byte) []model.Package {
 	}
 	return pkgs
 }
+func (c *cargo) InstallCmd(pkg string) (string, []string) {
+	return "cargo", []string{"install", pkg}
+}
+
+func (c *cargo) RemoveCmd(pkg string) (string, []string) {
+	return "cargo", []string{"uninstall", pkg}
+}
+
+func (c *cargo) UpgradeCmd(pkg string) (string, []string) {
+	return "cargo", []string{"install", pkg}
+}

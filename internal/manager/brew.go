@@ -133,3 +133,17 @@ func parseBrewOutdated(data []byte) ([]model.Package, error) {
 	}
 	return pkgs, nil
 }
+func (b *brew) InstallCmd(pkg string) (string, []string) {
+	return "brew", []string{"install", pkg}
+}
+
+func (b *brew) RemoveCmd(pkg string) (string, []string) {
+	return "brew", []string{"uninstall", pkg}
+}
+
+func (b *brew) UpgradeCmd(pkg string) (string, []string) {
+	if pkg != "" {
+		return "brew", []string{"upgrade", pkg}
+	}
+	return "brew", []string{"upgrade"}
+}
