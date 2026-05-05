@@ -9,7 +9,7 @@ import (
 
 type pnpm struct{}
 
-func NewPnpm() Manager { return &pnpm{} }
+func NewPnpm() model.Manager { return &pnpm{} }
 
 func (p *pnpm) Name() string      { return "pnpm" }
 func (p *pnpm) Available() bool    { _, err := exec.LookPath("pnpm"); return err == nil }
@@ -23,9 +23,16 @@ func (p *pnpm) List(ctx context.Context) ([]model.Package, error) {
 }
 
 func (p *pnpm) Search(ctx context.Context, query string) ([]model.Package, error) {
-	// pnpm search was removed; delegate to npm
 	n := &npm{}
-	return n.Search(ctx, query)
+	pkgs, err := n.Search(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	for i := range pkgs {
+		pkgs[i].Manager = "pnpm"
+		pkgs[i].Description = "[via npm registry] " + pkgs[i].Description
+	}
+	return pkgs, nil
 }
 
 func (p *pnpm) Install(ctx context.Context, pkg string) error {

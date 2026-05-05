@@ -1,9 +1,6 @@
 package tui
 
-import (
-	"github.com/calendar/yuman/internal/manager"
-	"github.com/calendar/yuman/internal/model"
-)
+import "github.com/calendar/yuman/internal/model"
 
 // viewState tracks which view is active.
 type viewState int
@@ -15,6 +12,8 @@ const (
 	viewDetail
 	viewHelp
 	viewOutdated
+	viewDuplicates
+	viewEnvironment
 )
 
 // colSpec describes a table column's sizing constraints.
@@ -46,7 +45,7 @@ var outdatedColSpecs = []colSpec{
 
 // managerStatus holds runtime info about a manager.
 type managerStatus struct {
-	mgr           manager.Manager
+	name          string
 	available     bool
 	count         int // installed count, -1 = loading, -2 = error
 	outdatedCount int // number of outdated packages, -1 = not checked

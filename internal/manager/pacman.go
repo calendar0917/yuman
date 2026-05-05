@@ -11,18 +11,17 @@ import (
 
 type pacman struct{}
 
-func NewPacman() Manager { return &pacman{} }
+func NewPacman() model.Manager { return &pacman{} }
 
 func (p *pacman) Name() string      { return "pacman" }
 func (p *pacman) Available() bool    { _, err := exec.LookPath("pacman"); return err == nil }
 
 func (p *pacman) List(ctx context.Context) ([]model.Package, error) {
-	// Use -Qs with empty regex to get descriptions for all installed packages
-	out, err := exec.CommandContext(ctx, "pacman", "-Qs", "").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "pacman", "-Q").CombinedOutput()
 	if err != nil {
 		return nil, err
 	}
-	return parsePacmanSearch(out, "pacman"), nil
+	return parseSpaceKV(out, "pacman"), nil
 }
 
 func (p *pacman) Search(ctx context.Context, query string) ([]model.Package, error) {

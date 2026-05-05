@@ -15,22 +15,23 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 
+	"github.com/calendar/yuman/internal/backend"
 	"github.com/calendar/yuman/internal/backup"
 	"github.com/calendar/yuman/internal/config"
-	"github.com/calendar/yuman/internal/manager"
 	"github.com/calendar/yuman/internal/model"
 )
 
 // App is the root TUI model.
 type App struct {
-	state    viewState
-	managers []managerStatus
-	cfg      *config.Config
-	width    int
-	height   int
-	DryRun   bool
+	state   viewState
+	backend *backend.Backend
+	cfg     *config.Config
+	width   int
+	height  int
+	DryRun  bool
 
-	// Dashboard
+	// Dashboard — runtime state tracked per manager for UI
+	managers   []managerStatus
 	dashCursor int
 
 	// Installed view
@@ -39,12 +40,12 @@ type App struct {
 	selectedMgr    int
 
 	// Search
-	searchInput          textinput.Model
-	searchTable          table.Model
-	searchPkgs           []model.Package
-	searching            bool
-	searchLoading        int
-	searchInputFocused   bool
+	searchInput           textinput.Model
+	searchTable           table.Model
+	searchPkgs            []model.Package
+	searching             bool
+	searchLoading         int
+	searchInputFocused    bool
 	searchFilterInstalled bool
 
 	// Detail
@@ -55,9 +56,17 @@ type App struct {
 	helpOpen bool
 
 	// Outdated view
-	outdatedTable      table.Model
-	outdatedPkgs       []model.Package
+	outdatedTable       table.Model
+	outdatedPkgs        []model.Package
 	outdatedViewLoading int
+
+	// Duplicates view
+	duplicatesGroups []model.DuplicateGroup
+	duplicatesTable  table.Model
+
+	// Environment view
+	env     *model.Environment
+	envPath string
 
 	// Confirmation dialog
 	confirmOpen bool
@@ -67,9 +76,6 @@ type App struct {
 
 	// Spinner
 	spinner spinner.Model
-
-	// Installed cache: "manager/name" → true
-	installedCache map[string]bool
 
 	// Operation output
 	operationActive bool
@@ -84,15 +90,14 @@ type App struct {
 
 // NewApp creates and initializes the TUI application.
 func NewApp(cfg *config.Config) *App {
-	all := manager.All()
+	b := backend.New(cfg)
 
-	statuses := make([]managerStatus, 0, len(all))
-	for _, m := range all {
-		if !cfg.IsEnabled(m.Name()) {
-			continue
-		}
+	names := b.ManagerNames()
+	statuses := make([]managerStatus, 0, len(names))
+	for _, name := range names {
+		m := b.Manager(name)
 		statuses = append(statuses, managerStatus{
-			mgr:           m,
+			name:          name,
 			available:     m.Available(),
 			count:         -1,
 			outdatedCount: -1,
@@ -113,12 +118,12 @@ func NewApp(cfg *config.Config) *App {
 	vp.SetHeight(10)
 
 	return &App{
-		state:          viewDashboard,
-		managers:       statuses,
-		cfg:            cfg,
+		state:    viewDashboard,
+		backend:  b,
+		managers: statuses,
+		cfg:      cfg,
 		searchInput:    si,
 		spinner:        sp,
-		installedCache: make(map[string]bool),
 		operationView:  vp,
 	}
 }
@@ -133,26 +138,28 @@ func (a *App) Init() tea.Cmd {
 
 // loadAllManagers loads installed packages from all available managers in parallel.
 func (a *App) loadAllManagers() tea.Cmd {
-	var cmds []tea.Cmd
 	for i := range a.managers {
 		a.managers[i].outdatedCount = -1
 	}
+
+	var cmds []tea.Cmd
 	for _, ms := range a.managers {
 		if !ms.available {
 			continue
 		}
-		mgr := ms.mgr
+		name := ms.name
 		a.loading++
 		cmds = append(cmds, func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(),
 				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 			defer cancel()
-			pkgs, err := mgr.List(ctx)
-			return loadedMsg{
-				managerName: mgr.Name(),
-				packages:    pkgs,
-				err:         err,
+
+			m := a.backend.Manager(name)
+			if m == nil {
+				return loadedMsg{managerName: name, err: fmt.Errorf("manager %q not found", name)}
 			}
+			pkgs, err := m.List(ctx)
+			return loadedMsg{managerName: name, packages: pkgs, err: err}
 		})
 	}
 	if len(cmds) == 0 {
@@ -168,18 +175,23 @@ func (a *App) loadOutdatedCounts() tea.Cmd {
 		if !ms.available || ms.count <= 0 {
 			continue
 		}
-		mgr := ms.mgr
+		name := ms.name
 		a.outdatedLoading++
 		cmds = append(cmds, func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(),
 				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 			defer cancel()
-			pkgs, err := mgr.Outdated(ctx)
+
+			m := a.backend.Manager(name)
+			if m == nil {
+				return outdatedCountMsg{managerName: name, count: 0}
+			}
+			pkgs, err := m.Outdated(ctx)
 			count := 0
 			if err == nil {
 				count = len(pkgs)
 			}
-			return outdatedCountMsg{managerName: mgr.Name(), count: count}
+			return outdatedCountMsg{managerName: name, count: count}
 		})
 	}
 	if len(cmds) == 0 {
@@ -200,13 +212,18 @@ func (a *App) reloadManager(idx int) tea.Cmd {
 	a.managers[idx].count = -1
 	a.managers[idx].outdatedCount = -1
 	a.managers[idx].err = nil
-	mgr := ms.mgr
+	name := ms.name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 		defer cancel()
-		pkgs, err := mgr.List(ctx)
-		return loadedMsg{managerName: mgr.Name(), packages: pkgs, err: err}
+
+		m := a.backend.Manager(name)
+		if m == nil {
+			return loadedMsg{managerName: name, err: fmt.Errorf("manager %q not found", name)}
+		}
+		pkgs, err := m.List(ctx)
+		return loadedMsg{managerName: name, packages: pkgs, err: err}
 	}
 }
 
@@ -233,17 +250,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loadedMsg:
 		a.loading--
-		for i, ms := range a.managers {
-			if ms.mgr.Name() == msg.managerName {
+		for i := range a.managers {
+			if a.managers[i].name == msg.managerName {
 				if msg.err != nil {
 					a.managers[i].count = -2
 					a.managers[i].err = msg.err
 				} else {
 					a.managers[i].count = len(msg.packages)
 					a.managers[i].err = nil
-					for _, p := range msg.packages {
-						a.installedCache[msg.managerName+"/"+p.Name] = true
-					}
 				}
 				break
 			}
@@ -256,8 +270,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case outdatedCountMsg:
 		a.outdatedLoading--
-		for i, ms := range a.managers {
-			if ms.mgr.Name() == msg.managerName {
+		for i := range a.managers {
+			if a.managers[i].name == msg.managerName {
 				a.managers[i].outdatedCount = msg.count
 				break
 			}
@@ -271,7 +285,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.searchLoading--
 		if msg.err == nil {
 			for _, p := range msg.packages {
-				if a.installedCache[p.Manager+"/"+p.Name] {
+				if a.backend.IsInstalled(p.Manager, p.Name) {
 					p.Installed = true
 				}
 				a.searchPkgs = append(a.searchPkgs, p)
@@ -341,10 +355,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusMsg = fmt.Sprintf("%s saved to %s", msg.action, msg.path)
 		}
 		return a, nil
-	}
 
-	return a, tea.Batch(cmds...)
-}
+		case duplicatesMsg:
+			a.duplicatesGroups = msg.groups
+			a.statusMsg = fmt.Sprintf("found %d duplicate groups across managers", len(msg.groups))
+			return a, nil
+		}
+
+		return a, tea.Batch(cmds...)
+	}
 
 func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.helpOpen {
@@ -452,6 +471,12 @@ func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
 		return a, a.exportSnapshot()
 	case "i":
 		return a, a.importSnapshot()
+	case "D":
+		a.state = viewDuplicates
+		a.statusMsg = "checking for duplicates..."
+		return a, a.loadDuplicates()
+	case "v":
+		return a.loadEnvironment()
 	}
 	return a, nil
 }
@@ -465,7 +490,7 @@ func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 	case "enter":
 		row := a.installedTable.SelectedRow()
 		if row != nil && len(row) > 0 {
-			a.openDetail(row[0], a.managers[a.selectedMgr].mgr.Name())
+			a.openDetail(row[0], a.managers[a.selectedMgr].name)
 		}
 	case "u":
 		row := a.installedTable.SelectedRow()
@@ -590,7 +615,7 @@ func (a *App) handleConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (a *App) openConfirm(action, pkgName string) {
 	a.confirmOpen = true
 	a.confirmAct = action
-	a.confirmPkg = model.Package{Name: pkgName, Manager: a.managers[a.selectedMgr].mgr.Name()}
+	a.confirmPkg = model.Package{Name: pkgName, Manager: a.managers[a.selectedMgr].name}
 	a.confirmYes = true
 }
 
@@ -632,16 +657,10 @@ func (a *App) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// executeAction dispatches a manager operation with streaming output.
+// executeAction dispatches a manager operation using the backend.
 func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
-	var mgr manager.Manager
-	for _, ms := range a.managers {
-		if ms.mgr.Name() == pkg.Manager {
-			mgr = ms.mgr
-			break
-		}
-	}
-	if mgr == nil {
+	m := a.backend.Manager(pkg.Manager)
+	if m == nil {
 		return func() tea.Msg {
 			return actionDoneMsg{action: action, pkgName: pkg.Name,
 				err: fmt.Errorf("manager %q not found", pkg.Manager)}
@@ -666,11 +685,11 @@ func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
 		var err error
 		switch action {
 		case "install":
-			err = mgr.Install(ctx, pkg.Name)
+			err = a.backend.Install(ctx, pkg.Manager, pkg.Name)
 		case "remove":
-			err = mgr.Remove(ctx, pkg.Name)
+			err = a.backend.Remove(ctx, pkg.Manager, pkg.Name)
 		case "upgrade":
-			err = mgr.Upgrade(ctx, pkg.Name)
+			err = a.backend.Upgrade(ctx, pkg.Manager, pkg.Name)
 		default:
 			err = fmt.Errorf("unknown action: %s", action)
 		}
@@ -690,22 +709,23 @@ func (a *App) doSearch(query string) tea.Cmd {
 		if !ms.available {
 			continue
 		}
-		mgr := ms.mgr
+		name := ms.name
 		a.searchLoading++
 		cmds = append(cmds, func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			pkgs, err := mgr.Search(ctx, query)
+
+			m := a.backend.Manager(name)
+			if m == nil {
+				return searchResultMsg{managerName: name}
+			}
+			pkgs, err := m.Search(ctx, query)
 			if err == nil {
 				for i := range pkgs {
-					pkgs[i].Manager = mgr.Name()
+					pkgs[i].Manager = name
 				}
 			}
-			return searchResultMsg{
-				managerName: mgr.Name(),
-				packages:    pkgs,
-				err:         err,
-			}
+			return searchResultMsg{managerName: name, packages: pkgs, err: err}
 		})
 	}
 
@@ -726,18 +746,23 @@ func (a *App) buildInstalledTable() tea.Cmd {
 		return nil
 	}
 
-	mgr := ms.mgr
+	name := ms.name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 		defer cancel()
 
-		pkgs, err := mgr.List(ctx)
+		m := a.backend.Manager(name)
+		if m == nil {
+			return installedWithOutdatedMsg{packages: nil}
+		}
+
+		pkgs, err := m.List(ctx)
 		if err != nil {
 			return installedWithOutdatedMsg{packages: nil}
 		}
 
-		outdated, _ := mgr.Outdated(ctx)
+		outdated, _ := m.Outdated(ctx)
 		omap := make(map[string]string, len(outdated))
 		for _, o := range outdated {
 			omap[o.Name] = o.Latest
@@ -925,6 +950,10 @@ func (a *App) View() tea.View {
 		b.WriteString(a.viewDetail())
 	case viewOutdated:
 		b.WriteString(a.viewOutdated())
+	case viewDuplicates:
+		b.WriteString(a.viewDuplicatesView())
+	case viewEnvironment:
+		b.WriteString(a.viewEnvironmentView())
 	}
 
 	if a.confirmOpen {
@@ -947,14 +976,19 @@ func (a *App) loadAllOutdated() tea.Cmd {
 		if !ms.available || ms.count <= 0 {
 			continue
 		}
-		mgr := ms.mgr
+		name := ms.name
 		a.outdatedViewLoading++
 		cmds = append(cmds, func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(),
 				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 			defer cancel()
-			pkgs, err := mgr.Outdated(ctx)
-			return outdatedResultMsg{managerName: mgr.Name(), packages: pkgs, err: err}
+
+			m := a.backend.Manager(name)
+			if m == nil {
+				return outdatedResultMsg{managerName: name}
+			}
+			pkgs, err := m.Outdated(ctx)
+			return outdatedResultMsg{managerName: name, packages: pkgs, err: err}
 		})
 	}
 	if len(cmds) == 0 {
@@ -1004,22 +1038,45 @@ func (a *App) updateOutdatedTable() {
 	a.outdatedTable = t
 }
 
+// loadDuplicates fires a background load of duplicate groups.
+func (a *App) loadDuplicates() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+		defer cancel()
+		return duplicatesMsg{groups: a.backend.FindDuplicates(ctx)}
+	}
+}
+
+type duplicatesMsg struct {
+	groups []model.DuplicateGroup
+}
+
+// loadEnvironment reads the current directory's yuman.tools.toml.
+func (a *App) loadEnvironment() (tea.Model, tea.Cmd) {
+	dir, _ := os.Getwd()
+	env, err := backend.ReadEnvironment(dir)
+	if err != nil {
+		a.statusMsg = "no yuman.tools.toml found in current or parent directories"
+		return a, nil
+	}
+	a.env = env
+	a.envPath = env.Path
+	a.state = viewEnvironment
+	return a, nil
+}
+
 // exportSnapshot collects all installed packages and writes them to a TOML file.
 func (a *App) exportSnapshot() tea.Cmd {
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+		defer cancel()
+
+		loaded := a.backend.LoadAll(ctx)
 		var pkgs []model.Package
-		for _, ms := range a.managers {
-			if !ms.available || ms.count <= 0 {
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(),
-				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
-			defer cancel()
-			installed, err := ms.mgr.List(ctx)
-			if err != nil {
-				continue
-			}
-			pkgs = append(pkgs, installed...)
+		for _, p := range loaded {
+			pkgs = append(pkgs, p...)
 		}
 
 		home, _ := os.UserHomeDir()
@@ -1045,21 +1102,16 @@ func (a *App) importSnapshot() tea.Cmd {
 
 		var installed int
 		for _, p := range snap.Packages {
-			key := p.Manager + "/" + p.Name
-			if a.installedCache[key] {
+			if a.backend.IsInstalled(p.Manager, p.Name) {
 				continue
 			}
-			// Find manager and install
-			for _, ms := range a.managers {
-				if ms.mgr.Name() == p.Manager && ms.available {
-					ctx, cancel := context.WithTimeout(context.Background(),
-						time.Duration(a.cfg.TimeoutSeconds())*time.Second)
-					if err := ms.mgr.Install(ctx, p.Name); err == nil {
-						installed++
-					}
-					cancel()
-					break
+			if m := a.backend.Manager(p.Manager); m != nil {
+				ctx, cancel := context.WithTimeout(context.Background(),
+					time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+				if err := a.backend.Install(ctx, p.Manager, p.Name); err == nil {
+					installed++
 				}
+				cancel()
 			}
 		}
 

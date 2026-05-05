@@ -28,6 +28,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		Managers: map[string]ManagerConfig{
 			"pacman":  {Enabled: true},
+			"apt":     {Enabled: false},
+			"dnf":     {Enabled: false},
+			"zypper":  {Enabled: false},
+			"brew":    {Enabled: false},
 			"paru":    {Enabled: true},
 			"pip":     {Enabled: true},
 			"npm":     {Enabled: true},

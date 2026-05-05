@@ -3,6 +3,7 @@ package manager
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 
@@ -11,10 +12,10 @@ import (
 
 type cargo struct{}
 
-func NewCargo() Manager { return &cargo{} }
+func NewCargo() model.Manager { return &cargo{} }
 
-func (c *cargo) Name() string      { return "cargo" }
-func (c *cargo) Available() bool    { _, err := exec.LookPath("cargo"); return err == nil }
+func (c *cargo) Name() string   { return "cargo" }
+func (c *cargo) Available() bool { _, err := exec.LookPath("cargo"); return err == nil }
 
 func (c *cargo) List(ctx context.Context) ([]model.Package, error) {
 	out, err := exec.CommandContext(ctx, "cargo", "install", "--list").CombinedOutput()
@@ -39,17 +40,24 @@ func (c *cargo) Remove(ctx context.Context, pkg string) error {
 	return exec.CommandContext(ctx, "cargo", "uninstall", pkg).Run()
 }
 
-func (c *cargo) Outdated(_ context.Context) ([]model.Package, error) {
-	// cargo has no built-in outdated command without cargo-outdated
-	return nil, nil
+func (c *cargo) Outdated(ctx context.Context) ([]model.Package, error) {
+	if _, err := exec.LookPath("cargo-outdated"); err != nil {
+		// cargo-outdated not installed; user can add it with: cargo install cargo-outdated
+		return nil, nil
+	}
+	out, err := exec.CommandContext(ctx, "cargo", "outdated", "--format", "json").CombinedOutput()
+	if err != nil {
+		return nil, nil
+	}
+	return parseCargoOutdated(out), nil
 }
 
 func (c *cargo) Upgrade(ctx context.Context, pkg string) error {
-	// cargo install re-downloads and installs the latest version
 	if pkg != "" {
 		return exec.CommandContext(ctx, "cargo", "install", pkg).Run()
 	}
-	// No built-in upgrade-all for cargo
+	// cargo has no built-in upgrade-all. If cargo-outdated is installed,
+	// we could use it, but that adds complexity for now.
 	return nil
 }
 
@@ -111,6 +119,31 @@ func parseCargoSearch(data []byte) []model.Package {
 			Version:     version,
 			Description: desc,
 			Manager:     "cargo",
+		})
+	}
+	return pkgs
+}
+
+// parseCargoOutdated parses `cargo outdated --format json` output.
+func parseCargoOutdated(data []byte) []model.Package {
+	var out struct {
+		Crates []struct {
+			Name    string `json:"name"`
+			Current string `json:"project_version"`
+			Latest  string `json:"latest_version"`
+		} `json:"crates"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	pkgs := make([]model.Package, 0, len(out.Crates))
+	for _, c := range out.Crates {
+		pkgs = append(pkgs, model.Package{
+			Name:     c.Name,
+			Version:  c.Current,
+			Latest:   c.Latest,
+			Outdated: true,
+			Manager:  "cargo",
 		})
 	}
 	return pkgs

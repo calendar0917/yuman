@@ -11,13 +11,13 @@ import (
 
 type flatpak struct{}
 
-func NewFlatpak() Manager { return &flatpak{} }
+func NewFlatpak() model.Manager { return &flatpak{} }
 
 func (f *flatpak) Name() string      { return "flatpak" }
 func (f *flatpak) Available() bool    { _, err := exec.LookPath("flatpak"); return err == nil }
 
 func (f *flatpak) List(ctx context.Context) ([]model.Package, error) {
-	out, err := exec.CommandContext(ctx, "flatpak", "list", "--app", "--columns=application,version").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "flatpak", "list", "--columns=application,version").CombinedOutput()
 	if err != nil {
 		return nil, nil
 	}
@@ -40,7 +40,7 @@ func (f *flatpak) Remove(ctx context.Context, pkg string) error {
 }
 
 func (f *flatpak) Outdated(ctx context.Context) ([]model.Package, error) {
-	out, err := exec.CommandContext(ctx, "flatpak", "remote-ls", "--app", "--updates", "--columns=application,version").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "flatpak", "remote-ls", "--updates", "--columns=application,version").CombinedOutput()
 	if err != nil {
 		return nil, nil
 	}

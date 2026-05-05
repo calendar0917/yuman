@@ -66,8 +66,8 @@ func TestNewApp(t *testing.T) {
 	if len(app.managers) == 0 {
 		t.Error("expected at least one manager")
 	}
-	if app.installedCache == nil {
-		t.Error("expected installed cache to be initialized")
+	if app.backend == nil {
+		t.Error("expected backend to be initialized")
 	}
 	if app.searchInput.Placeholder == "" {
 		t.Error("expected search placeholder")

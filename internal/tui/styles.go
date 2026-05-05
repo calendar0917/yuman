@@ -81,4 +81,7 @@ var (
 
 	SpinnerStyle = lipgloss.NewStyle().
 			Foreground(colorPrimary)
+
+	DimStyle = lipgloss.NewStyle().
+			Foreground(colorDim)
 )

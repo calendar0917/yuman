@@ -1,0 +1,22 @@
+# Maintainer: calendar <1131821081@qq.com>
+
+pkgname=yuman-bin
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Multi-source TUI/CLI package manager for Linux"
+arch=('x86_64' 'aarch64')
+url="https://github.com/calendar0917/yuman"
+license=('MIT')
+depends=()
+source=("${pkgname%-bin}-${pkgver}-linux-amd64.tar.gz::${url}/releases/download/v${pkgver}/yuman_${pkgver}_linux_amd64.tar.gz"
+        "${pkgname%-bin}-${pkgver}-linux-arm64.tar.gz::${url}/releases/download/v${pkgver}/yuman_${pkgver}_linux_arm64.tar.gz")
+sha256sums=('SKIP' 'SKIP')
+
+package() {
+  case "$CARCH" in
+    x86_64)  src="yuman_${pkgver}_linux_amd64" ;;
+    aarch64) src="yuman_${pkgver}_linux_arm64" ;;
+  esac
+  cd "$srcdir/$src"
+  install -Dm755 yuman "$pkgdir/usr/bin/yuman"
+}

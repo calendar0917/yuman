@@ -131,7 +131,7 @@ func (a *App) viewDashboard() string {
 			cursor = CursorStyle.Render("▸ ")
 		}
 
-		name := ms.mgr.Name()
+		name := ms.name
 		avail := ""
 		if !ms.available {
 			avail = ErrorStyle.Render(" (not installed)")
@@ -184,7 +184,7 @@ func (a *App) viewDashboard() string {
 func (a *App) viewInstalled() string {
 	var b strings.Builder
 	ms := a.managers[a.selectedMgr]
-	header := fmt.Sprintf("Installed: %s", ms.mgr.Name())
+	header := fmt.Sprintf("Installed: %s", ms.name)
 	b.WriteString(HeaderStyle.Render(header))
 	b.WriteString("\n\n")
 
@@ -279,5 +279,54 @@ func (a *App) viewDetail() string {
 
 	b.WriteString("\n\n")
 	b.WriteString(HelpStyle.Render("i: install  u: upgrade  x: remove  esc: back"))
+	return b.String()
+}
+
+func (a *App) viewDuplicatesView() string {
+	var b strings.Builder
+	b.WriteString(HeaderStyle.Render("Duplicate Packages"))
+	b.WriteString("\n\n")
+
+	if len(a.duplicatesGroups) == 0 {
+		b.WriteString(SuccessStyle.Render("  no duplicates found"))
+		b.WriteString("\n")
+	} else {
+		for _, g := range a.duplicatesGroups {
+			b.WriteString(fmt.Sprintf("  %s\n", WarningStyle.Render(g.Name)))
+			for _, e := range g.Entries {
+				b.WriteString(fmt.Sprintf("    %s  %s\n",
+					ManagerTagStyle.Render(e.Manager),
+					VersionStyle.Render(e.Package.Version)))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString(HelpStyle.Render("esc: back to dashboard"))
+	return b.String()
+}
+
+func (a *App) viewEnvironmentView() string {
+	var b strings.Builder
+	b.WriteString(HeaderStyle.Render("Environment"))
+	b.WriteString("\n\n")
+
+	if a.env == nil {
+		b.WriteString(HelpStyle.Render("  no yuman.tools.toml found"))
+		b.WriteString("\n")
+	} else {
+		for _, tool := range a.env.Tools {
+			mark := "✗"
+			if a.backend.IsInstalled(tool.Manager, tool.Name) {
+				mark = SuccessStyle.Render("✓")
+			}
+			b.WriteString(fmt.Sprintf("  %s  %s  %s (wanted: %s)\n",
+				mark, tool.Name, ManagerTagStyle.Render(tool.Manager), VersionStyle.Render(tool.Version)))
+		}
+		b.WriteString(fmt.Sprintf("\n  config: %s\n", DimStyle.Render(a.envPath)))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(HelpStyle.Render("esc: back to dashboard"))
 	return b.String()
 }

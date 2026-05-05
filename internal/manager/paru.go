@@ -12,7 +12,7 @@ type paru struct {
 	cmd string // "paru" or "yay"
 }
 
-func NewParu() Manager {
+func NewParu() model.Manager {
 	// Prefer paru, fall back to yay
 	if _, err := exec.LookPath("paru"); err == nil {
 		return &paru{cmd: "paru"}

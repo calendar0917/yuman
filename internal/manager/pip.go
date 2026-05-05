@@ -3,14 +3,17 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os/exec"
+	"time"
 
 	"github.com/calendar/yuman/internal/model"
 )
 
 type pip struct{}
 
-func NewPip() Manager { return &pip{} }
+func NewPip() model.Manager { return &pip{} }
 
 func (p *pip) Name() string      { return "pip" }
 func (p *pip) Available() bool    { _, err := exec.LookPath("pip"); return err == nil }
@@ -43,12 +46,51 @@ func (p *pip) List(ctx context.Context) ([]model.Package, error) {
 
 func (p *pip) Search(ctx context.Context, query string) ([]model.Package, error) {
 	out, err := exec.CommandContext(ctx, "pip", "search", query).CombinedOutput()
+	if err == nil {
+		return parseLines(out, "pip"), nil
+	}
+	return p.searchPyPI(ctx, query)
+}
+
+func (p *pip) searchPyPI(ctx context.Context, query string) ([]model.Package, error) {
+	url := fmt.Sprintf("https://pypi.org/pypi/%s/json", query)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		// pip search is often disabled; fall back to empty
-		_ = out
 		return nil, nil
 	}
-	return parseLines(out, "pip"), nil
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, nil
+	}
+
+	var data struct {
+		Info struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			Summary string `json:"summary"`
+		} `json:"info"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, nil
+	}
+
+	if data.Info.Name == "" {
+		return nil, nil
+	}
+
+	return []model.Package{{
+		Name:        data.Info.Name,
+		Version:     data.Info.Version,
+		Description: data.Info.Summary,
+		Manager:     "pip",
+	}}, nil
 }
 
 func (p *pip) Install(ctx context.Context, pkg string) error {

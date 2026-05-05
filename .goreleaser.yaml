@@ -1,0 +1,77 @@
+version: 2
+
+builds:
+  - id: yuman
+    binary: yuman
+    main: ./cmd/yuman
+    goos: [linux]
+    goarch: [amd64, arm64]
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+
+archives:
+  - id: default
+    builds: [yuman]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+nfpms:
+  - id: default
+    package_name: yuman
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    builds: [yuman]
+    vendor: calendar
+    homepage: https://github.com/calendar0917/yuman
+    maintainer: calendar <1131821081@qq.com>
+    description: Multi-source TUI/CLI package manager for Linux
+    license: MIT
+    formats: [deb, rpm, archlinux]
+    archlinux:
+      packager: calendar
+
+aurs:
+  - id: yuman-bin
+    name: yuman-bin
+    homepage: https://github.com/calendar0917/yuman
+    description: Multi-source TUI/CLI package manager for Linux
+    maintainers: ["calendar <1131821081@qq.com>"]
+    license: MIT
+    private_key: "{{ .Env.AUR_SSH_PRIVATE_KEY }}"
+    git_url: ssh://aur@aur.archlinux.org/yuman-bin.git
+    package: |-
+      cd "$srcdir"
+      install -Dm755 "yuman" "$pkgdir/usr/bin/yuman"
+    commit_author:
+      name: calendar
+      email: 1131821081@qq.com
+
+brews:
+  - name: yuman
+    repository:
+      owner: calendar0917
+      name: homebrew-tap
+    homepage: https://github.com/calendar0917/yuman
+    description: Multi-source TUI/CLI package manager for Linux
+
+release:
+  github:
+    owner: calendar0917
+    name: yuman
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
