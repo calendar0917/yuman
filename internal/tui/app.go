@@ -390,8 +390,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.operationView.GotoBottom()
 
 	case actionDoneMsg:
-		a.operationActive = false
-		// Show captured command output
+		// Keep operationActive so the output stays visible
 		if len(msg.output) > 0 {
 			a.operationLog = append(a.operationLog, msg.output...)
 		}
@@ -499,6 +498,11 @@ func (a *App) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleOperationKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		a.operationActive = false
+		a.statusMsg = "ready"
+		return a, nil
+	}
 	var cmd tea.Cmd
 	a.operationView, cmd = a.operationView.Update(msg)
 	return a, cmd

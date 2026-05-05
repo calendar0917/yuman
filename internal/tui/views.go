@@ -108,7 +108,7 @@ func (a *App) viewOperation() string {
 	}
 
 	b.WriteString("\n\n")
-	b.WriteString(HelpStyle.Render("j/k: scroll  esc: wait for completion"))
+	b.WriteString(HelpStyle.Render("j/k: scroll  esc: back"))
 	return b.String()
 }
 
