@@ -271,7 +271,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.operationView.SetWidth(msg.Width - 4)
+		a.operationView.SetWidth(msg.Width - 8)
 		a.operationView.SetHeight(a.operationHeight())
 		if len(a.installedPkgs) > 0 {
 			a.updateInstalledTable()
@@ -917,7 +917,7 @@ func (a *App) updateInstalledTable() {
 		table.WithRows(rows),
 		table.WithFocused(true),
 		table.WithHeight(a.tableHeight()),
-		table.WithWidth(a.width),
+		table.WithWidth(a.width - 4),
 	)
 
 	s := table.DefaultStyles()
@@ -971,7 +971,7 @@ func (a *App) updateSearchTable() {
 		table.WithRows(rows),
 		table.WithFocused(true),
 		table.WithHeight(a.tableHeight()),
-		table.WithWidth(a.width),
+		table.WithWidth(a.width - 4),
 	)
 
 	s := table.DefaultStyles()
@@ -1139,7 +1139,7 @@ func (a *App) updateOutdatedTable() {
 		table.WithRows(rows),
 		table.WithFocused(true),
 		table.WithHeight(a.tableHeight()),
-		table.WithWidth(a.width),
+		table.WithWidth(a.width - 4),
 	)
 
 	s := table.DefaultStyles()
