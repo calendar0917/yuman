@@ -84,6 +84,17 @@ func (c *Config) IsEnabled(name string) bool {
 	if mc, ok := c.Managers[name]; ok {
 		return mc.Enabled
 	}
+	// paru/yay share the same config key
+	if name == "yay" {
+		if mc, ok := c.Managers["paru"]; ok {
+			return mc.Enabled
+		}
+	}
+	if name == "paru" {
+		if mc, ok := c.Managers["yay"]; ok {
+			return mc.Enabled
+		}
+	}
 	return true // default to enabled if not configured
 }
 

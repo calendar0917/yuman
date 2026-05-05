@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -10,56 +12,14 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	"charm.land/lipgloss/v2"
 
+	"github.com/calendar/yuman/internal/backup"
 	"github.com/calendar/yuman/internal/config"
 	"github.com/calendar/yuman/internal/manager"
 	"github.com/calendar/yuman/internal/model"
 )
-
-// viewState tracks which view is active.
-type viewState int
-
-const (
-	viewDashboard viewState = iota
-	viewInstalled
-	viewSearch
-	viewDetail
-)
-
-// managerStatus holds runtime info about a manager.
-type managerStatus struct {
-	mgr       manager.Manager
-	available bool
-	count     int // installed count, -1 = loading, -2 = error
-	err       error
-}
-
-// loadedMsg carries results from a background manager query.
-type loadedMsg struct {
-	managerName string
-	packages    []model.Package
-	err         error
-}
-
-// installedLoadedMsg carries packages for the currently viewed manager.
-type installedLoadedMsg struct {
-	packages []model.Package
-}
-
-// searchResultMsg carries partial search results from a single manager.
-type searchResultMsg struct {
-	managerName string
-	packages    []model.Package
-	err         error
-}
-
-// actionDoneMsg reports the result of an install/remove/upgrade action.
-type actionDoneMsg struct {
-	action  string
-	pkgName string
-	err     error
-}
 
 // App is the root TUI model.
 type App struct {
@@ -68,6 +28,7 @@ type App struct {
 	cfg      *config.Config
 	width    int
 	height   int
+	DryRun   bool
 
 	// Dashboard
 	dashCursor int
@@ -75,20 +36,28 @@ type App struct {
 	// Installed view
 	installedTable table.Model
 	installedPkgs  []model.Package
-	selectedMgr    int // index into managers
+	selectedMgr    int
 
 	// Search
-	searchInput         textinput.Model
-	searchTable         table.Model
-	searchPkgs          []model.Package
-	searching           bool
-	searchLoading       int  // pending manager search count
-	searchInputFocused  bool // true = typing in input, false = navigating results
-	searchFilterInstalled bool // show only installed packages
+	searchInput          textinput.Model
+	searchTable          table.Model
+	searchPkgs           []model.Package
+	searching            bool
+	searchLoading        int
+	searchInputFocused   bool
+	searchFilterInstalled bool
 
 	// Detail
-	detailPkg  model.Package
-	prevState  viewState // where to go back on esc from detail
+	detailPkg model.Package
+	prevState viewState
+
+	// Help
+	helpOpen bool
+
+	// Outdated view
+	outdatedTable      table.Model
+	outdatedPkgs       []model.Package
+	outdatedViewLoading int
 
 	// Confirmation dialog
 	confirmOpen bool
@@ -102,9 +71,15 @@ type App struct {
 	// Installed cache: "manager/name" → true
 	installedCache map[string]bool
 
+	// Operation output
+	operationActive bool
+	operationLog    []string
+	operationView   viewport.Model
+
 	// Status
-	loading   int // number of pending manager loads
-	statusMsg string
+	loading         int
+	outdatedLoading int
+	statusMsg       string
 }
 
 // NewApp creates and initializes the TUI application.
@@ -117,22 +92,25 @@ func NewApp(cfg *config.Config) *App {
 			continue
 		}
 		statuses = append(statuses, managerStatus{
-			mgr:       m,
-			available: m.Available(),
-			count:     -1, // not loaded yet
+			mgr:           m,
+			available:     m.Available(),
+			count:         -1,
+			outdatedCount: -1,
 		})
 	}
 
-	// Search input
 	si := textinput.New()
 	si.Placeholder = "search across all managers..."
 	si.CharLimit = 100
 	si.SetWidth(40)
 
-	// Spinner
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = SpinnerStyle
+
+	vp := viewport.New()
+	vp.SetWidth(80)
+	vp.SetHeight(10)
 
 	return &App{
 		state:          viewDashboard,
@@ -141,6 +119,7 @@ func NewApp(cfg *config.Config) *App {
 		searchInput:    si,
 		spinner:        sp,
 		installedCache: make(map[string]bool),
+		operationView:  vp,
 	}
 }
 
@@ -152,10 +131,12 @@ func (a *App) Init() tea.Cmd {
 	)
 }
 
-// loadAllManagers returns a tea.Cmd that loads installed packages from all
-// available managers in parallel.
+// loadAllManagers loads installed packages from all available managers in parallel.
 func (a *App) loadAllManagers() tea.Cmd {
 	var cmds []tea.Cmd
+	for i := range a.managers {
+		a.managers[i].outdatedCount = -1
+	}
 	for _, ms := range a.managers {
 		if !ms.available {
 			continue
@@ -180,6 +161,55 @@ func (a *App) loadAllManagers() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// loadOutdatedCounts fires parallel Outdated() calls for all available managers.
+func (a *App) loadOutdatedCounts() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, ms := range a.managers {
+		if !ms.available || ms.count <= 0 {
+			continue
+		}
+		mgr := ms.mgr
+		a.outdatedLoading++
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(),
+				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+			defer cancel()
+			pkgs, err := mgr.Outdated(ctx)
+			count := 0
+			if err == nil {
+				count = len(pkgs)
+			}
+			return outdatedCountMsg{managerName: mgr.Name(), count: count}
+		})
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+// reloadManager reloads a single manager by index.
+func (a *App) reloadManager(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(a.managers) {
+		return nil
+	}
+	ms := a.managers[idx]
+	if !ms.available {
+		return nil
+	}
+	a.managers[idx].count = -1
+	a.managers[idx].outdatedCount = -1
+	a.managers[idx].err = nil
+	mgr := ms.mgr
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(),
+			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+		defer cancel()
+		pkgs, err := mgr.List(ctx)
+		return loadedMsg{managerName: mgr.Name(), packages: pkgs, err: err}
+	}
+}
+
 // Update implements tea.Model.
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -188,7 +218,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		// Rebuild tables with new height
+		a.operationView.SetWidth(msg.Width - 4)
+		a.operationView.SetHeight(a.operationHeight())
 		if len(a.installedPkgs) > 0 {
 			a.updateInstalledTable()
 		}
@@ -210,7 +241,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					a.managers[i].count = len(msg.packages)
 					a.managers[i].err = nil
-					// Populate installed cache
 					for _, p := range msg.packages {
 						a.installedCache[msg.managerName+"/"+p.Name] = true
 					}
@@ -219,14 +249,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if a.loading == 0 {
-			a.statusMsg = "all managers loaded"
+			a.statusMsg = "checking for updates..."
+			return a, a.loadOutdatedCounts()
+		}
+		return a, nil
+
+	case outdatedCountMsg:
+		a.outdatedLoading--
+		for i, ms := range a.managers {
+			if ms.mgr.Name() == msg.managerName {
+				a.managers[i].outdatedCount = msg.count
+				break
+			}
+		}
+		if a.outdatedLoading <= 0 {
+			a.statusMsg = "ready"
 		}
 		return a, nil
 
 	case searchResultMsg:
 		a.searchLoading--
 		if msg.err == nil {
-			// Cross-reference with installed cache
 			for _, p := range msg.packages {
 				if a.installedCache[p.Manager+"/"+p.Name] {
 					p.Installed = true
@@ -241,8 +284,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case installedLoadedMsg:
+	case outdatedResultMsg:
+		a.outdatedViewLoading--
+		if msg.err == nil && len(msg.packages) > 0 {
+			a.outdatedPkgs = append(a.outdatedPkgs, msg.packages...)
+		}
+		if a.outdatedViewLoading <= 0 {
+			a.updateOutdatedTable()
+			a.statusMsg = fmt.Sprintf("%d outdated packages across all managers", len(a.outdatedPkgs))
+		}
+		return a, nil
+
+	case installedWithOutdatedMsg:
 		a.installedPkgs = msg.packages
+		for i := range a.installedPkgs {
+			if latest, ok := msg.outdated[a.installedPkgs[i].Name]; ok {
+				a.installedPkgs[i].Outdated = true
+				a.installedPkgs[i].Latest = latest
+			}
+		}
 		a.updateInstalledTable()
 		return a, nil
 
@@ -251,11 +311,34 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.spinner, cmd = a.spinner.Update(msg)
 		cmds = append(cmds, cmd)
 
+	case operationOutputMsg:
+		a.operationLog = append(a.operationLog, string(msg))
+		if len(a.operationLog) > 1000 {
+			a.operationLog = a.operationLog[1:]
+		}
+		a.operationView.SetContent(strings.Join(a.operationLog, "\n"))
+		a.operationView.GotoBottom()
+
 	case actionDoneMsg:
+		a.operationActive = false
 		if msg.err != nil {
+			a.operationLog = append(a.operationLog,
+				ErrorStyle.Render(fmt.Sprintf("✗ %s %s failed: %v", msg.action, msg.pkgName, msg.err)))
 			a.statusMsg = fmt.Sprintf("%s %s failed: %v", msg.action, msg.pkgName, msg.err)
 		} else {
+			a.operationLog = append(a.operationLog,
+				SuccessStyle.Render(fmt.Sprintf("✓ %s %s succeeded", msg.action, msg.pkgName)))
 			a.statusMsg = fmt.Sprintf("%s %s succeeded", msg.action, msg.pkgName)
+		}
+		a.operationView.SetContent(strings.Join(a.operationLog, "\n"))
+		a.operationView.GotoBottom()
+		return a, nil
+
+	case backupMsg:
+		if msg.err != nil {
+			a.statusMsg = fmt.Sprintf("%s failed: %v", msg.action, msg.err)
+		} else {
+			a.statusMsg = fmt.Sprintf("%s saved to %s", msg.action, msg.path)
 		}
 		return a, nil
 	}
@@ -264,14 +347,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Confirmation dialog has priority
+	if a.helpOpen {
+		return a.handleHelpKey(msg)
+	}
+	if a.operationActive {
+		return a.handleOperationKey(msg)
+	}
 	if a.confirmOpen {
 		return a.handleConfirmKey(msg)
 	}
 
 	key := msg.String()
 
-	// Global keys
 	switch key {
 	case "ctrl+c":
 		return a, tea.Quit
@@ -279,9 +366,11 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if a.state != viewSearch {
 			return a, tea.Quit
 		}
+	case "?":
+		a.helpOpen = true
+		return a, nil
 	case "esc":
 		if a.state == viewDetail {
-			// Let handleDetailKey handle it — returns to prevState
 			break
 		}
 		if a.state != viewDashboard {
@@ -311,9 +400,25 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a.handleSearchKey(key, msg)
 	case viewDetail:
 		return a.handleDetailKey(key)
+	case viewOutdated:
+		return a.handleOutdatedKey(key, msg)
 	}
 
 	return a, nil
+}
+
+func (a *App) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	if key == "?" || key == "esc" || key == "q" {
+		a.helpOpen = false
+	}
+	return a, nil
+}
+
+func (a *App) handleOperationKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	a.operationView, cmd = a.operationView.Update(msg)
+	return a, cmd
 }
 
 func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
@@ -334,9 +439,19 @@ func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
 			return a, a.buildInstalledTable()
 		}
 	case "r":
-		// Reload
-		a.statusMsg = "reloading..."
+		a.statusMsg = "reloading selected..."
+		return a, a.reloadManager(a.dashCursor)
+	case "R":
+		a.statusMsg = "reloading all..."
 		return a, a.loadAllManagers()
+	case "o":
+		a.state = viewOutdated
+		a.statusMsg = "checking for outdated packages..."
+		return a, a.loadAllOutdated()
+	case "e":
+		return a, a.exportSnapshot()
+	case "i":
+		return a, a.importSnapshot()
 	}
 	return a, nil
 }
@@ -367,7 +482,6 @@ func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 }
 
 func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Tab toggles focus between input and results table
 	if key == "tab" {
 		if len(a.searchPkgs) > 0 {
 			a.searchInputFocused = !a.searchInputFocused
@@ -380,7 +494,6 @@ func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.C
 		return a, nil
 	}
 
-	// Input-focused mode: typing goes to textinput
 	if a.searchInputFocused {
 		switch key {
 		case "enter":
@@ -398,13 +511,12 @@ func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.C
 		}
 	}
 
-	// Table-focused mode: navigation keys go to table
 	switch key {
 	case "enter", "d":
 		if len(a.searchPkgs) > 0 {
 			row := a.searchTable.SelectedRow()
 			if row != nil && len(row) > 0 {
-				a.openDetail(row[0], row[2]) // row[2] is manager name
+				a.openDetail(row[0], row[2])
 			}
 		}
 	case "up", "k":
@@ -425,6 +537,34 @@ func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.C
 	case "f":
 		a.searchFilterInstalled = !a.searchFilterInstalled
 		a.updateSearchTable()
+	}
+	return a, nil
+}
+
+func (a *App) handleOutdatedKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		a.outdatedTable, _ = a.outdatedTable.Update(msg)
+	case "down", "j":
+		a.outdatedTable, _ = a.outdatedTable.Update(msg)
+	case "esc":
+		a.state = viewDashboard
+		a.statusMsg = "ready"
+		return a, nil
+	case "U":
+		if len(a.outdatedPkgs) > 0 {
+			a.state = viewDashboard
+			a.statusMsg = "upgrading all outdated..."
+			managersToUpgrade := make(map[string]bool)
+			for _, p := range a.outdatedPkgs {
+				managersToUpgrade[p.Manager] = true
+			}
+			var cmds []tea.Cmd
+			for mgrName := range managersToUpgrade {
+				cmds = append(cmds, a.executeAction("upgrade", model.Package{Name: "", Manager: mgrName}))
+			}
+			return a, tea.Sequence(cmds...)
+		}
 	}
 	return a, nil
 }
@@ -455,19 +595,16 @@ func (a *App) openConfirm(action, pkgName string) {
 }
 
 func (a *App) openDetail(pkgName, mgrName string) {
-	// Find the package details from our loaded data
 	var pkg model.Package
 	pkg.Name = pkgName
 	pkg.Manager = mgrName
 
-	// Search installed packages
 	for _, p := range a.installedPkgs {
 		if p.Name == pkgName {
 			pkg = p
 			break
 		}
 	}
-	// Search results override (more info available)
 	for _, p := range a.searchPkgs {
 		if p.Name == pkgName && p.Manager == mgrName {
 			pkg = p
@@ -495,9 +632,8 @@ func (a *App) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-// executeAction dispatches a manager operation as a tea.Cmd.
+// executeAction dispatches a manager operation with streaming output.
 func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
-	// Find the manager by name
 	var mgr manager.Manager
 	for _, ms := range a.managers {
 		if ms.mgr.Name() == pkg.Manager {
@@ -511,6 +647,16 @@ func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
 				err: fmt.Errorf("manager %q not found", pkg.Manager)}
 		}
 	}
+
+	if a.DryRun {
+		return func() tea.Msg {
+			return actionDoneMsg{action: action, pkgName: pkg.Name, err: nil}
+		}
+	}
+
+	a.operationActive = true
+	a.operationLog = nil
+	a.operationView.SetContent("")
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(),
@@ -528,12 +674,12 @@ func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
 		default:
 			err = fmt.Errorf("unknown action: %s", action)
 		}
+
 		return actionDoneMsg{action: action, pkgName: pkg.Name, err: err}
 	}
 }
 
-// doSearch starts parallel searches across all managers. Each manager sends
-// its own searchResultMsg when done, so the UI updates incrementally.
+// doSearch starts parallel searches across all managers.
 func (a *App) doSearch(query string) tea.Cmd {
 	a.searchPkgs = nil
 	a.searchLoading = 0
@@ -547,7 +693,6 @@ func (a *App) doSearch(query string) tea.Cmd {
 		mgr := ms.mgr
 		a.searchLoading++
 		cmds = append(cmds, func() tea.Msg {
-			// 5s timeout per manager for search — fast feedback
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			pkgs, err := mgr.Search(ctx, query)
@@ -571,8 +716,7 @@ func (a *App) doSearch(query string) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// buildInstalledTable triggers an async load of installed packages for the
-// selected manager. Results arrive via installedLoadedMsg.
+// buildInstalledTable triggers an async load of installed+outdated packages.
 func (a *App) buildInstalledTable() tea.Cmd {
 	ms := a.managers[a.selectedMgr]
 	a.installedPkgs = nil
@@ -587,29 +731,45 @@ func (a *App) buildInstalledTable() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 		defer cancel()
+
 		pkgs, err := mgr.List(ctx)
 		if err != nil {
-			// Send empty list on error so the loading state clears
-			return installedLoadedMsg{packages: nil}
+			return installedWithOutdatedMsg{packages: nil}
 		}
-		return installedLoadedMsg{packages: pkgs}
+
+		outdated, _ := mgr.Outdated(ctx)
+		omap := make(map[string]string, len(outdated))
+		for _, o := range outdated {
+			omap[o.Name] = o.Latest
+		}
+
+		return installedWithOutdatedMsg{packages: pkgs, outdated: omap}
 	}
 }
 
 func (a *App) updateInstalledTable() {
+	widths := a.computeColumnWidths(installedColSpecs)
 	cols := []table.Column{
-		{Title: "Name", Width: 30},
-		{Title: "Version", Width: 15},
-		{Title: "Description", Width: 40},
+		{Title: "Name", Width: widths[0]},
+		{Title: "Version", Width: widths[1]},
+		{Title: "Description", Width: widths[2]},
 	}
 
 	rows := make([]table.Row, 0, len(a.installedPkgs))
 	for _, p := range a.installedPkgs {
+		name := p.Name
+		version := p.Version
 		desc := p.Description
+
+		if p.Outdated {
+			name = WarningStyle.Render(p.Name)
+			version = WarningStyle.Render(p.Version + " -> " + p.Latest)
+		}
+
 		if len(desc) > 38 {
 			desc = desc[:35] + "..."
 		}
-		rows = append(rows, table.Row{p.Name, p.Version, desc})
+		rows = append(rows, table.Row{name, version, desc})
 	}
 
 	t := table.New(
@@ -635,11 +795,12 @@ func (a *App) updateInstalledTable() {
 }
 
 func (a *App) updateSearchTable() {
+	widths := a.computeColumnWidths(searchColSpecs)
 	cols := []table.Column{
-		{Title: "Name", Width: 25},
-		{Title: "Version", Width: 12},
-		{Title: "Manager", Width: 8},
-		{Title: "Description", Width: 40},
+		{Title: "Name", Width: widths[0]},
+		{Title: "Version", Width: widths[1]},
+		{Title: "Manager", Width: widths[2]},
+		{Title: "Description", Width: widths[3]},
 	}
 
 	rows := make([]table.Row, 0, len(a.searchPkgs))
@@ -647,11 +808,19 @@ func (a *App) updateSearchTable() {
 		if a.searchFilterInstalled && !p.Installed {
 			continue
 		}
+		name := p.Name
+		version := p.Version
+		mgr := p.Manager
 		desc := p.Description
+
+		if p.Installed {
+			name = SuccessStyle.Render(p.Name)
+		}
+
 		if len(desc) > 38 {
 			desc = desc[:35] + "..."
 		}
-		rows = append(rows, table.Row{p.Name, p.Version, p.Manager, desc})
+		rows = append(rows, table.Row{name, version, mgr, desc})
 	}
 
 	t := table.New(
@@ -676,6 +845,41 @@ func (a *App) updateSearchTable() {
 	a.searchTable = t
 }
 
+func (a *App) computeColumnWidths(specs []colSpec) []int {
+	available := a.width - 2
+	if available < 20 {
+		available = 20
+	}
+
+	widths := make([]int, len(specs))
+	totalFlex := 0
+	used := 0
+
+	for i, s := range specs {
+		widths[i] = s.min
+		used += s.min
+		totalFlex += s.flex
+	}
+
+	remaining := available - used - (len(specs) - 1)
+	if remaining <= 0 || totalFlex == 0 {
+		return widths
+	}
+
+	for i, s := range specs {
+		if s.flex == 0 {
+			continue
+		}
+		extra := remaining * s.flex / totalFlex
+		if widths[i]+extra > s.max {
+			extra = s.max - widths[i]
+		}
+		widths[i] += extra
+	}
+
+	return widths
+}
+
 func (a *App) tableHeight() int {
 	h := a.height - 8
 	if h < 5 {
@@ -692,10 +896,23 @@ func (a *App) View() tea.View {
 
 	var b strings.Builder
 
-	// Header
 	title := TitleStyle.Render("yuman")
 	b.WriteString(title)
 	b.WriteString("\n")
+
+	if a.helpOpen {
+		b.WriteString(a.viewHelp())
+		b.WriteString("\n")
+		b.WriteString(a.viewStatus())
+		return tea.NewView(b.String())
+	}
+
+	if a.operationActive {
+		b.WriteString(a.viewOperation())
+		b.WriteString("\n")
+		b.WriteString(a.viewStatus())
+		return tea.NewView(b.String())
+	}
 
 	switch a.state {
 	case viewDashboard:
@@ -706,212 +923,149 @@ func (a *App) View() tea.View {
 		b.WriteString(a.viewSearch())
 	case viewDetail:
 		b.WriteString(a.viewDetail())
+	case viewOutdated:
+		b.WriteString(a.viewOutdated())
 	}
 
-	// Confirmation dialog overlay
 	if a.confirmOpen {
 		b.WriteString("\n")
 		b.WriteString(a.viewConfirm())
 	}
 
-	// Status bar
 	b.WriteString("\n")
 	b.WriteString(a.viewStatus())
 
 	return tea.NewView(b.String())
 }
 
-func (a *App) viewDashboard() string {
-	var b strings.Builder
-	b.WriteString(HeaderStyle.Render("Package Managers"))
-	b.WriteString("\n\n")
+func (a *App) loadAllOutdated() tea.Cmd {
+	a.outdatedPkgs = nil
+	a.outdatedViewLoading = 0
 
-	if len(a.managers) == 0 {
-		b.WriteString(ErrorStyle.Render("  No managers configured. Edit ~/.config/yuman/yuman.toml"))
-		b.WriteString("\n")
-		return b.String()
+	var cmds []tea.Cmd
+	for _, ms := range a.managers {
+		if !ms.available || ms.count <= 0 {
+			continue
+		}
+		mgr := ms.mgr
+		a.outdatedViewLoading++
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(),
+				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+			defer cancel()
+			pkgs, err := mgr.Outdated(ctx)
+			return outdatedResultMsg{managerName: mgr.Name(), packages: pkgs, err: err}
+		})
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+func (a *App) updateOutdatedTable() {
+	widths := a.computeColumnWidths(outdatedColSpecs)
+	cols := []table.Column{
+		{Title: "Name", Width: widths[0]},
+		{Title: "Current", Width: widths[1]},
+		{Title: "Latest", Width: widths[2]},
+		{Title: "Manager", Width: widths[3]},
 	}
 
-	for i, ms := range a.managers {
-		cursor := "  "
-		if i == a.dashCursor {
-			cursor = CursorStyle.Render("▸ ")
+	rows := make([]table.Row, 0, len(a.outdatedPkgs))
+	for _, p := range a.outdatedPkgs {
+		rows = append(rows, table.Row{
+			WarningStyle.Render(p.Name),
+			p.Version,
+			WarningStyle.Render(p.Latest),
+			p.Manager,
+		})
+	}
+
+	t := table.New(
+		table.WithColumns(cols),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(a.tableHeight()),
+		table.WithWidth(a.width),
+	)
+
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		Bold(true).
+		Foreground(colorWarning)
+	s.Selected = s.Selected.
+		Foreground(colorWarning).
+		Bold(true)
+	t.SetStyles(s)
+
+	a.outdatedTable = t
+}
+
+// exportSnapshot collects all installed packages and writes them to a TOML file.
+func (a *App) exportSnapshot() tea.Cmd {
+	return func() tea.Msg {
+		var pkgs []model.Package
+		for _, ms := range a.managers {
+			if !ms.available || ms.count <= 0 {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(),
+				time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+			defer cancel()
+			installed, err := ms.mgr.List(ctx)
+			if err != nil {
+				continue
+			}
+			pkgs = append(pkgs, installed...)
 		}
 
-		name := ms.mgr.Name()
-		avail := ""
-		if !ms.available {
-			avail = ErrorStyle.Render(" (not installed)")
-		} else if ms.count == -1 {
-			avail = a.spinner.View() + " loading..."
-		} else if ms.count == -2 {
-			errMsg := "error"
-			if ms.err != nil {
-				errMsg = ms.err.Error()
-				if len(errMsg) > 40 {
-					errMsg = errMsg[:37] + "..."
+		home, _ := os.UserHomeDir()
+		name := fmt.Sprintf("yuman-snapshot-%s.toml", time.Now().Format("20060102"))
+		path := filepath.Join(home, name)
+
+		err := backup.ExportTOML(path, pkgs)
+		return backupMsg{action: "export", path: path, err: err}
+	}
+}
+
+// importSnapshot reads a TOML snapshot and attempts to install missing packages.
+func (a *App) importSnapshot() tea.Cmd {
+	return func() tea.Msg {
+		home, _ := os.UserHomeDir()
+		name := fmt.Sprintf("yuman-snapshot-%s.toml", time.Now().Format("20060102"))
+		path := filepath.Join(home, name)
+
+		snap, err := backup.ImportTOML(path)
+		if err != nil {
+			return backupMsg{action: "import", path: path, err: err}
+		}
+
+		var installed int
+		for _, p := range snap.Packages {
+			key := p.Manager + "/" + p.Name
+			if a.installedCache[key] {
+				continue
+			}
+			// Find manager and install
+			for _, ms := range a.managers {
+				if ms.mgr.Name() == p.Manager && ms.available {
+					ctx, cancel := context.WithTimeout(context.Background(),
+						time.Duration(a.cfg.TimeoutSeconds())*time.Second)
+					if err := ms.mgr.Install(ctx, p.Name); err == nil {
+						installed++
+					}
+					cancel()
+					break
 				}
 			}
-			avail = ErrorStyle.Render(fmt.Sprintf(" error: %s", errMsg))
-		} else {
-			avail = SuccessStyle.Render(fmt.Sprintf(" %d packages", ms.count))
 		}
 
-		line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(name), avail)
-		if i == a.dashCursor {
-			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, name)) + avail
+		if installed == 0 {
+			return backupMsg{action: "import", path: path, err: fmt.Errorf("no new packages to install")}
 		}
-		b.WriteString(line)
-		b.WriteString("\n")
+		return backupMsg{action: "import", path: path}
 	}
-
-	// Show error detail for selected manager
-	if a.dashCursor < len(a.managers) {
-		ms := a.managers[a.dashCursor]
-		if ms.err != nil {
-			b.WriteString("\n")
-			b.WriteString(ErrorStyle.Render(fmt.Sprintf("  Error: %v", ms.err)))
-			b.WriteString("\n")
-		}
-	}
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: navigate  enter: browse  /: search  r: reload  q: quit"))
-	return b.String()
 }
-
-func (a *App) viewInstalled() string {
-	var b strings.Builder
-	ms := a.managers[a.selectedMgr]
-	header := fmt.Sprintf("Installed: %s", ms.mgr.Name())
-	b.WriteString(HeaderStyle.Render(header))
-	b.WriteString("\n\n")
-
-	if len(a.installedPkgs) == 0 {
-		b.WriteString(HelpStyle.Render("  loading packages..."))
-		b.WriteString("\n")
-	} else {
-		b.WriteString(a.installedTable.View())
-	}
-
-	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: navigate  enter: detail  u: upgrade  x: remove  esc: back"))
-	return b.String()
-}
-
-func (a *App) viewSearch() string {
-	var b strings.Builder
-
-	// Show focus indicator and filter state in header
-	headerText := "Search Packages"
-	if a.searchInputFocused {
-		headerText += "  [input]"
-	} else if len(a.searchPkgs) > 0 {
-		headerText += "  [results]"
-	}
-	if a.searchFilterInstalled {
-		headerText += "  [installed only]"
-	}
-	b.WriteString(HeaderStyle.Render(headerText))
-	b.WriteString("\n\n")
-
-	b.WriteString(SearchPromptStyle.Render("❯ "))
-	b.WriteString(a.searchInput.View())
-	b.WriteString("\n\n")
-
-	if a.searching {
-		b.WriteString(a.spinner.View())
-		b.WriteString(" searching across all managers...")
-		b.WriteString("\n")
-	} else if len(a.searchPkgs) > 0 {
-		b.WriteString(a.searchTable.View())
-	} else if a.searchInput.Value() != "" && !a.searching {
-		b.WriteString(HelpStyle.Render("  no results found"))
-		b.WriteString("\n")
-	} else {
-		b.WriteString(HelpStyle.Render("  type a query and press enter"))
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n")
-	if a.searchInputFocused {
-		b.WriteString(HelpStyle.Render("enter: search  tab: switch to results  esc: back"))
-	} else {
-		b.WriteString(HelpStyle.Render("j/k: navigate  enter/d: detail  i: install  f: filter installed  tab: switch to input  esc: back"))
-	}
-	return b.String()
-}
-
-func (a *App) viewDetail() string {
-	var b strings.Builder
-	pkg := a.detailPkg
-
-	b.WriteString(HeaderStyle.Render("Package Detail"))
-	b.WriteString("\n\n")
-
-	// Package name with manager tag
-	b.WriteString(fmt.Sprintf("  %s  %s\n",
-		TitleStyle.Render(pkg.Name),
-		ManagerTagStyle.Render(fmt.Sprintf("[%s]", pkg.Manager)),
-	))
-	b.WriteString("\n")
-
-	// Version info
-	if pkg.Version != "" {
-		b.WriteString(fmt.Sprintf("  %s  %s", DescStyle.Render("Version:"), VersionStyle.Render(pkg.Version)))
-		if pkg.Latest != "" {
-			b.WriteString(fmt.Sprintf(" → %s", SuccessStyle.Render(pkg.Latest)))
-		}
-		b.WriteString("\n")
-	}
-
-	// Description
-	if pkg.Description != "" {
-		b.WriteString(fmt.Sprintf("  %s  %s\n", DescStyle.Render("Description:"), pkg.Description))
-	}
-
-	// Status
-	status := "not installed"
-	if pkg.Installed {
-		status = SuccessStyle.Render("installed")
-	} else if pkg.Outdated {
-		status = WarningStyle.Render("outdated")
-	}
-	b.WriteString(fmt.Sprintf("  %s  %s\n", DescStyle.Render("Status:"), status))
-
-	b.WriteString("\n\n")
-	b.WriteString(HelpStyle.Render("i: install  u: upgrade  x: remove  esc: back"))
-	return b.String()
-}
-
-func (a *App) viewConfirm() string {
-	msg := fmt.Sprintf("%s %s from %s?",
-		strings.ToUpper(a.confirmAct),
-		SelectedItemStyle.Render(a.confirmPkg.Name),
-		ManagerTagStyle.Render(a.confirmPkg.Manager),
-	)
-	buttons := fmt.Sprintf("[ %s ] [ %s ]",
-		SuccessStyle.Render("Yes (y)"),
-		ErrorStyle.Render("No (n)"),
-	)
-	content := fmt.Sprintf("%s\n\n%s", msg, buttons)
-	return DialogBoxStyle.Render(content)
-}
-
-func (a *App) viewStatus() string {
-	left := ""
-	if a.loading > 0 {
-		left = fmt.Sprintf("%s loading %d manager(s)...", a.spinner.View(), a.loading)
-	} else if a.statusMsg != "" {
-		left = a.statusMsg
-	}
-	right := fmt.Sprintf("q: quit")
-	padding := a.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-	if padding < 0 {
-		padding = 0
-	}
-	return StatusBarStyle.Render(
-		left + strings.Repeat(" ", padding) + HelpStyle.Render(right),
-	)
-}
-
