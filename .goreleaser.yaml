@@ -34,28 +34,15 @@ nfpms:
     archlinux:
       packager: calendar
 
-aurs:
-  - name: yuman-bin
-    homepage: https://github.com/calendar0917/yuman
-    description: Multi-source TUI/CLI package manager for Linux
-    maintainers: ["calendar <1131821081@qq.com>"]
-    license: MIT
-    private_key: "{{ .Env.AUR_SSH_PRIVATE_KEY }}"
-    git_url: ssh://aur@aur.archlinux.org/yuman-bin.git
-    package: |-
-      cd "$srcdir"
-      install -Dm755 "yuman" "$pkgdir/usr/bin/yuman"
-    commit_author:
-      name: calendar
-      email: 1131821081@qq.com
-
-brews:
-  - name: yuman
-    repository:
-      owner: calendar0917
-      name: homebrew-tap
-    homepage: https://github.com/calendar0917/yuman
-    description: Multi-source TUI/CLI package manager for Linux
+# aurs and brews require pre-existing repos:
+#   gh repo create calendar0917/homebrew-tap --public
+#   AUR: register yuman-bin package on aur.archlinux.org
+# aurs:
+#   - name: yuman-bin
+#     ...
+# brews:
+#   - name: yuman
+#     ...
 
 release:
   github:
