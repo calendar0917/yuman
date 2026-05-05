@@ -7,9 +7,9 @@ import (
 )
 
 func (a *App) operationHeight() int {
-	h := a.height - 6
-	if h < 5 {
-		h = 5
+	h := a.height - 14
+	if h < 8 {
+		h = 8
 	}
 	return h
 }

@@ -390,10 +390,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.operationView.GotoBottom()
 
 	case actionDoneMsg:
-		// Keep operationActive so the output stays visible
-		if len(msg.output) > 0 {
-			a.operationLog = append(a.operationLog, msg.output...)
-		}
+		a.operationActive = false
 		if msg.err != nil {
 			a.operationLog = append(a.operationLog,
 				ErrorStyle.Render(fmt.Sprintf("✗ %s %s failed: %v", msg.action, msg.pkgName, msg.err)))
@@ -498,11 +495,6 @@ func (a *App) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleOperationKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "esc" {
-		a.operationActive = false
-		a.statusMsg = "ready"
-		return a, nil
-	}
 	var cmd tea.Cmd
 	a.operationView, cmd = a.operationView.Update(msg)
 	return a, cmd
@@ -862,33 +854,27 @@ func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
 	a.operationActive = true
 	a.operationLog = nil
 	a.operationView.SetContent("")
+	a.operationView.SetWidth(a.width - 6)
+	a.operationView.SetHeight(a.operationHeight())
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(),
 			time.Duration(a.cfg.TimeoutSeconds())*time.Second)
 		defer cancel()
 
-		// Build the command args based on action
-		var name string
-		var args []string
+		var err error
 		switch action {
 		case "install":
-			name, args = m.InstallCmd(pkg.Name)
+			err = a.backend.Install(ctx, pkg.Manager, pkg.Name)
 		case "remove":
-			name, args = m.RemoveCmd(pkg.Name)
+			err = a.backend.Remove(ctx, pkg.Manager, pkg.Name)
 		case "upgrade":
-			name, args = m.UpgradeCmd(pkg.Name)
+			err = a.backend.Upgrade(ctx, pkg.Manager, pkg.Name)
 		default:
-			return actionDoneMsg{action: action, pkgName: pkg.Name,
-				err: fmt.Errorf("unknown action: %s", action)}
+			err = fmt.Errorf("unknown action: %s", action)
 		}
 
-		var output []string
-		err := backend.StreamCmd(ctx, func(line string) {
-			output = append(output, line)
-		}, name, args...)
-
-		return actionDoneMsg{action: action, pkgName: pkg.Name, err: err, output: output}
+		return actionDoneMsg{action: action, pkgName: pkg.Name, err: err}
 	}
 }
 
