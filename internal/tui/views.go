@@ -139,14 +139,6 @@ func (a *App) viewDashboard() string {
 		}
 	}
 
-	// Find max count for bar chart scaling
-	maxCount := 0
-	for _, ms := range a.managers {
-		if ms.count > maxCount {
-			maxCount = ms.count
-		}
-	}
-
 	// Group managers: show Arch family together
 	for i, ms := range a.managers {
 		// Skip yay/paru when pacman is available (they share the same DB)
@@ -157,15 +149,7 @@ func (a *App) viewDashboard() string {
 		cursor := "  "
 		isCursor := i == a.dashCursor
 		if isCursor {
-			cursor = SelectedBg.Render("▸ ")
-		}
-
-		// Icon prefix: ● for available, ✗ for unavailable
-		icon := "● "
-		if !ms.available {
-			icon = ErrorStyle.Render("✗ ")
-		} else if ms.count == -1 {
-			icon = ""
+			cursor = CursorStyle.Render("▸ ")
 		}
 
 		name := ms.name
@@ -188,20 +172,11 @@ func (a *App) viewDashboard() string {
 			if ms.outdatedCount > 0 {
 				avail += WarningStyle.Render(fmt.Sprintf(", %d updates", ms.outdatedCount))
 			}
-			// Bar chart
-			if maxCount > 0 {
-				barLen := (ms.count * 20) / maxCount
-				if barLen > 20 {
-					barLen = 20
-				}
-				bar := strings.Repeat("█", barLen)
-				avail += " " + DimStyle.Render(bar)
-			}
 		}
 
-		line := fmt.Sprintf("%s%s%s%s", cursor, icon, ManagerTagStyle.Render(name), avail)
+		line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(name), avail)
 		if isCursor {
-			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s%s", cursor, icon, name)) + avail
+			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, name)) + avail
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -211,23 +186,16 @@ func (a *App) viewDashboard() string {
 	if pacmanAvail {
 		for _, ms := range a.managers {
 			if isArchHelper(ms.name) {
-				cursor := "  "
+				cursor := "    "
 				isCursor := false
-				// Find if cursor is at this helper's position
 				for idx, m := range a.managers {
 					if m.name == ms.name && idx == a.dashCursor {
 						isCursor = true
-						cursor = SelectedBg.Render("▸ ")
+						cursor = " " + CursorStyle.Render("▸ ")
 						break
 					}
 				}
 
-				icon := "● "
-				if !ms.available {
-					icon = ErrorStyle.Render("✗ ")
-				}
-
-				name := "  " + ms.name // Indent under pacman
 				var avail string
 				if !ms.available {
 					avail = ErrorStyle.Render("(not installed)")
@@ -235,9 +203,10 @@ func (a *App) viewDashboard() string {
 					avail = DescStyle.Render("(shared with pacman)")
 				}
 
-				line := fmt.Sprintf("%s%s%s%s", cursor, icon, ManagerTagStyle.Render(name), avail)
+				name := "  " + ms.name
+				line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(name), avail)
 				if isCursor {
-					line = SelectedItemStyle.Render(fmt.Sprintf("%s%s%s", cursor, icon, name)) + avail
+					line = " " + SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, name)) + avail
 				}
 				b.WriteString(line)
 				b.WriteString("\n")

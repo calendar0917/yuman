@@ -1047,14 +1047,14 @@ func (a *App) View() tea.View {
 		b.WriteString(a.viewHelp())
 		b.WriteString("\n")
 		b.WriteString(a.viewStatus())
-		return tea.NewView(b.String())
+		return tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
 	}
 
 	if a.operationActive {
 		b.WriteString(a.viewOperation())
 		b.WriteString("\n")
 		b.WriteString(a.viewStatus())
-		return tea.NewView(b.String())
+		return tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
 	}
 
 	switch a.state {
@@ -1082,7 +1082,7 @@ func (a *App) View() tea.View {
 	b.WriteString("\n")
 	b.WriteString(a.viewStatus())
 
-	return tea.NewView(b.String())
+	return tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
 }
 
 func (a *App) loadAllOutdated() tea.Cmd {

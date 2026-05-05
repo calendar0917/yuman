@@ -25,7 +25,7 @@ var (
 	HeaderStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorSecondary).
-			Border(lipgloss.DoubleBorder(), false, false, true, false).
+			Border(lipgloss.NormalBorder(), false, false, true, false).
 			BorderForeground(colorMuted).
 			Padding(0, 1)
 
@@ -84,8 +84,8 @@ var (
 	DimStyle = lipgloss.NewStyle().
 			Foreground(colorDim)
 
-	SelectedBg = lipgloss.NewStyle().
-			Foreground(colorFg).
-			Background(lipgloss.Color("24")).
-			Bold(true)
+	WindowStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorMuted).
+			Padding(0, 1)
 )
