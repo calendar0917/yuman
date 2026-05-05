@@ -25,11 +25,14 @@ func (a *App) viewStatus() string {
 		left = a.statusMsg
 	}
 	right := "?: help  q: quit"
-	padding := a.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	// Content area width: terminal width minus window border (2) and padding (2)
+	contentWidth := a.width - 4
+	padding := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
 	if padding < 0 {
 		padding = 0
 	}
 	return StatusBarStyle.
 		Background(lipgloss.Color("236")).
+		Width(contentWidth).
 		Render(left + strings.Repeat(" ", padding) + HelpStyle.Render(right))
 }
