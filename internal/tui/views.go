@@ -9,8 +9,6 @@ import (
 
 func (a *App) viewHelp() string {
 	var b strings.Builder
-	b.WriteString(HeaderStyle.Render("Help — Keybindings"))
-	b.WriteString("\n\n")
 
 	dr := DescStyle.Render
 
@@ -29,16 +27,24 @@ func (a *App) viewHelp() string {
 		{"  R          ", dr("reload all managers")},
 		{"  o          ", dr("view outdated packages")},
 		{"  e          ", dr("export snapshot to TOML")},
-		{"  i          ", dr("import snapshot from TOML")},
+		{"  i          ", dr("import snapshot to TOML")},
 		{"  D          ", dr("find duplicates")},
 		{"  v          ", dr("load environment from .tools.toml")},
 		{"", ""},
 		{"Installed Packages", ""},
 		{"  j/k ↑ ↓   ", dr("navigate packages")},
 		{"  ctrl+d/u   ", dr("half-page down/up")},
+		{"  /          ", dr("filter packages by name")},
+		{"  o          ", dr("view outdated in this manager")},
 		{"  enter      ", dr("package detail")},
 		{"  u          ", dr("upgrade package")},
 		{"  x          ", dr("remove package")},
+		{"", ""},
+		{"Outdated Packages", ""},
+		{"  j/k ↑ ↓   ", dr("navigate packages")},
+		{"  enter/d    ", dr("package detail")},
+		{"  u          ", dr("upgrade single package")},
+		{"  U          ", dr("upgrade all outdated")},
 		{"", ""},
 		{"Search", ""},
 		{"  enter      ", dr("execute search / open detail")},
@@ -63,7 +69,7 @@ func (a *App) viewHelp() string {
 		}
 	}
 
-	// Responsive dialog width
+	// Use viewport for scrolling
 	dlgWidth := a.width - 10
 	if dlgWidth < 40 {
 		dlgWidth = 40
@@ -71,12 +77,22 @@ func (a *App) viewHelp() string {
 	if dlgWidth > 60 {
 		dlgWidth = 60
 	}
+	vpHeight := a.height - 8
+	if vpHeight < 10 {
+		vpHeight = 10
+	}
+
+	a.helpViewport.SetContent(b.String())
+	a.helpViewport.SetWidth(dlgWidth - 6)
+	a.helpViewport.SetHeight(vpHeight)
+
 	dlgStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorAccent).
 		Padding(1, 3).
 		Width(dlgWidth)
-	return dlgStyle.Render(b.String())
+
+	return dlgStyle.Render(a.helpViewport.View())
 }
 
 func (a *App) viewOperation() string {
@@ -111,7 +127,13 @@ func (a *App) viewConfirm() string {
 
 func (a *App) viewOutdated() string {
 	var b strings.Builder
-	b.WriteString(HeaderStyle.Render("Outdated Packages — All Managers"))
+	headerText := "Outdated Packages"
+	if a.outdatedMgrFilter != "" {
+		headerText += " — " + a.outdatedMgrFilter
+	} else {
+		headerText += " — All Managers"
+	}
+	b.WriteString(HeaderStyle.Render(headerText))
 	b.WriteString("\n\n")
 
 	if a.outdatedViewLoading > 0 {
@@ -127,7 +149,7 @@ func (a *App) viewOutdated() string {
 
 	b.WriteString("\n")
 	if len(a.outdatedPkgs) > 0 {
-		b.WriteString(HelpStyle.Render("j/k: move  U: upgrade all  esc: back"))
+		b.WriteString(HelpStyle.Render("j/k: move  enter: detail  u: upgrade  U: all  esc: back"))
 	} else {
 		b.WriteString(HelpStyle.Render("esc: back"))
 	}
@@ -253,10 +275,22 @@ func (a *App) viewInstalled() string {
 	var b strings.Builder
 	ms := a.managers[a.selectedMgr]
 	header := fmt.Sprintf("Installed: %s", ms.name)
+	if a.filtering {
+		header += "  [filtering]"
+	}
+	if a.installedFilter.Value() != "" {
+		header += "  [" + a.installedFilter.Value() + "]"
+	}
 	b.WriteString(HeaderStyle.Render(header))
 	b.WriteString("\n\n")
 
-	if len(a.installedPkgs) == 0 {
+	if a.filtering {
+		b.WriteString(SearchPromptStyle.Render("/ "))
+		b.WriteString(a.installedFilter.View())
+		b.WriteString("\n\n")
+	}
+
+	if len(a.installedPkgs) == 0 && len(a.installedCached) == 0 {
 		b.WriteString(HelpStyle.Render("  loading packages..."))
 		b.WriteString("\n")
 	} else {
@@ -264,7 +298,7 @@ func (a *App) viewInstalled() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: move  enter: detail  u: upgrade  x: remove  esc: back"))
+	b.WriteString(HelpStyle.Render("/: filter  o: outdated  j/k: move  enter: detail  u: upgrade  x: remove  esc: back"))
 	return b.String()
 }
 

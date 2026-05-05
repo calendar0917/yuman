@@ -35,9 +35,12 @@ type App struct {
 	dashCursor int
 
 	// Installed view
-	installedTable table.Model
-	installedPkgs  []model.Package
-	selectedMgr    int
+	installedTable  table.Model
+	installedPkgs   []model.Package
+	installedCached []model.Package // cached to avoid re-fetching
+	installedFilter textinput.Model
+	filtering       bool
+	selectedMgr     int
 
 	// Search
 	searchInput           textinput.Model
@@ -54,12 +57,14 @@ type App struct {
 	prevState viewState
 
 	// Help
-	helpOpen bool
+	helpOpen     bool
+	helpViewport viewport.Model
 
 	// Outdated view
 	outdatedTable       table.Model
 	outdatedPkgs        []model.Package
 	outdatedViewLoading int
+	outdatedMgrFilter   string // filter outdated to a specific manager
 
 	// Duplicates view
 	duplicatesGroups []model.DuplicateGroup
@@ -110,6 +115,11 @@ func NewApp(cfg *config.Config) *App {
 	si.CharLimit = 100
 	si.SetWidth(40)
 
+	fi := textinput.New()
+	fi.Placeholder = "filter packages..."
+	fi.CharLimit = 50
+	fi.SetWidth(30)
+
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = SpinnerStyle
@@ -118,14 +128,20 @@ func NewApp(cfg *config.Config) *App {
 	vp.SetWidth(80)
 	vp.SetHeight(10)
 
+	hv := viewport.New()
+	hv.SetWidth(60)
+	hv.SetHeight(20)
+
 	return &App{
 		state:    viewDashboard,
 		backend:  b,
 		managers: statuses,
 		cfg:      cfg,
 		searchInput:    si,
+		installedFilter: fi,
 		spinner:        sp,
 		operationView:  vp,
+		helpViewport:   hv,
 	}
 }
 
@@ -273,6 +289,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.operationView.SetWidth(msg.Width - 8)
 		a.operationView.SetHeight(a.operationHeight())
+		a.helpViewport.SetHeight(msg.Height - 8)
 		if len(a.installedPkgs) > 0 {
 			a.updateInstalledTable()
 		}
@@ -353,6 +370,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.installedPkgs[i].Latest = latest
 			}
 		}
+		a.installedCached = a.installedPkgs
+		a.installedFilter.SetValue("")
+		a.filtering = false
 		a.updateInstalledTable()
 		return a, nil
 
@@ -467,8 +487,11 @@ func (a *App) handleHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 	if key == "?" || key == "esc" || key == "q" {
 		a.helpOpen = false
+		return a, nil
 	}
-	return a, nil
+	var cmd tea.Cmd
+	a.helpViewport, cmd = a.helpViewport.Update(msg)
+	return a, cmd
 }
 
 func (a *App) handleOperationKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -512,6 +535,7 @@ func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
 		return a, a.loadAllManagers()
 	case "o":
 		a.state = viewOutdated
+		a.outdatedMgrFilter = "" // all managers
 		a.statusMsg = "checking for outdated packages..."
 		return a, a.loadAllOutdated()
 	case "e":
@@ -529,7 +553,31 @@ func (a *App) handleDashboardKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if a.filtering {
+		if key == "esc" {
+			a.filtering = false
+			a.installedFilter.Blur()
+			a.installedFilter.SetValue("")
+			a.rebuildInstalledFromCache()
+			return a, nil
+		}
+		if key == "enter" {
+			a.filtering = false
+			a.installedFilter.Blur()
+			a.rebuildInstalledFromCache()
+			return a, nil
+		}
+		var cmd tea.Cmd
+		a.installedFilter, cmd = a.installedFilter.Update(msg)
+		a.rebuildInstalledFromCache()
+		return a, cmd
+	}
+
 	switch key {
+	case "/":
+		a.filtering = true
+		a.installedFilter.Focus()
+		return a, textinput.Blink
 	case "ctrl+d":
 		downMsg := tea.KeyPressMsg{Code: tea.KeyDown}
 		for i := 0; i < 5; i++ {
@@ -559,6 +607,11 @@ func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 		if row != nil && len(row) > 0 {
 			a.openConfirm("remove", row[0])
 		}
+	case "o":
+		a.state = viewOutdated
+		a.outdatedMgrFilter = a.managers[a.selectedMgr].name
+		a.statusMsg = "checking for outdated packages..."
+		return a, a.loadAllOutdated()
 	}
 	return a, nil
 }
@@ -674,10 +727,16 @@ func (a *App) handleOutdatedKey(key string, msg tea.KeyPressMsg) (tea.Model, tea
 		a.outdatedTable, _ = a.outdatedTable.Update(msg)
 	case "down", "j":
 		a.outdatedTable, _ = a.outdatedTable.Update(msg)
-	case "esc":
-		a.state = viewDashboard
-		a.statusMsg = "ready"
-		return a, nil
+	case "enter", "d":
+		row := a.outdatedTable.SelectedRow()
+		if row != nil && len(row) > 0 {
+			a.openDetail(row[0], row[3])
+		}
+	case "u":
+		row := a.outdatedTable.SelectedRow()
+		if row != nil && len(row) > 0 {
+			a.openConfirm("upgrade", row[0])
+		}
 	case "U":
 		if len(a.outdatedPkgs) > 0 {
 			a.state = viewDashboard
@@ -692,6 +751,11 @@ func (a *App) handleOutdatedKey(key string, msg tea.KeyPressMsg) (tea.Model, tea
 			}
 			return a, tea.Sequence(cmds...)
 		}
+	case "esc":
+		a.state = viewDashboard
+		a.outdatedMgrFilter = ""
+		a.statusMsg = "ready"
+		return a, nil
 	}
 	return a, nil
 }
@@ -852,9 +916,23 @@ func (a *App) doSearch(query string) tea.Cmd {
 }
 
 // buildInstalledTable triggers an async load of installed+outdated packages.
+// Uses cache if the same manager was previously loaded.
 func (a *App) buildInstalledTable() tea.Cmd {
 	ms := a.managers[a.selectedMgr]
+
+	// Use cache if same manager was already loaded
+	if a.installedCached != nil {
+		if len(a.installedCached) > 0 && a.installedCached[0].Manager == ms.name {
+			a.installedPkgs = a.installedCached
+			a.installedFilter.SetValue("")
+			a.filtering = false
+			a.updateInstalledTable()
+			return nil
+		}
+	}
+
 	a.installedPkgs = nil
+	a.installedCached = nil
 	a.updateInstalledTable()
 
 	if !ms.available {
@@ -932,6 +1010,25 @@ func (a *App) updateInstalledTable() {
 	t.SetStyles(s)
 
 	a.installedTable = t
+}
+
+// rebuildInstalledFromCache filters the cached packages by the installed filter
+// and rebuilds the table.
+func (a *App) rebuildInstalledFromCache() {
+	query := strings.TrimSpace(a.installedFilter.Value())
+	if query == "" {
+		a.installedPkgs = a.installedCached
+	} else {
+		lower := strings.ToLower(query)
+		filtered := a.installedCached[:0]
+		for _, p := range a.installedCached {
+			if strings.Contains(strings.ToLower(p.Name), lower) {
+				filtered = append(filtered, p)
+			}
+		}
+		a.installedPkgs = filtered
+	}
+	a.updateInstalledTable()
 }
 
 func (a *App) updateSearchTable() {
@@ -1090,6 +1187,10 @@ func (a *App) loadAllOutdated() tea.Cmd {
 	var cmds []tea.Cmd
 	for _, ms := range a.managers {
 		if !ms.available || ms.count <= 0 {
+			continue
+		}
+		// Filter by manager if set
+		if a.outdatedMgrFilter != "" && ms.name != a.outdatedMgrFilter {
 			continue
 		}
 		name := ms.name
