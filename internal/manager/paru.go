@@ -73,18 +73,3 @@ func (p *paru) Upgrade(ctx context.Context, pkg string) error {
 	}
 	return exec.CommandContext(ctx, p.cmd, "-Syu", "--noconfirm").Run()
 }
-
-func (p *paru) InstallCmd(pkg string) (string, []string) {
-	return p.cmd, []string{"-S", "--noconfirm", pkg}
-}
-
-func (p *paru) RemoveCmd(pkg string) (string, []string) {
-	return p.cmd, []string{"-R", "--noconfirm", pkg}
-}
-
-func (p *paru) UpgradeCmd(pkg string) (string, []string) {
-	if pkg != "" {
-		return p.cmd, []string{"-S", "--noconfirm", pkg}
-	}
-	return p.cmd, []string{"-Syu", "--noconfirm"}
-}

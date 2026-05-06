@@ -37,12 +37,14 @@ func (a *App) viewHelp() string {
 		{"  /          ", dr("filter packages by name")},
 		{"  o          ", dr("view outdated in this manager")},
 		{"  enter      ", dr("package detail")},
+		{"  r          ", dr("reload packages")},
 		{"  u          ", dr("upgrade package")},
 		{"  x          ", dr("remove package")},
 		{"", ""},
 		{"Outdated Packages", ""},
 		{"  j/k ↑ ↓   ", dr("navigate packages")},
 		{"  enter/d    ", dr("package detail")},
+		{"  r          ", dr("reload all managers")},
 		{"  u          ", dr("upgrade single package")},
 		{"  U          ", dr("upgrade all outdated")},
 		{"", ""},
@@ -107,8 +109,9 @@ func (a *App) viewOperation() string {
 		b.WriteString(a.operationView.View())
 	}
 
-	b.WriteString("\n\n")
-	b.WriteString(HelpStyle.Render("j/k: scroll  esc: back"))
+	b.WriteString("\n")
+	status := fmt.Sprintf("  %d lines  |  j/k: scroll  esc: wait for completion", len(a.operationLog))
+	b.WriteString(HelpStyle.Render(status))
 	return b.String()
 }
 
@@ -118,11 +121,46 @@ func (a *App) viewConfirm() string {
 		SelectedItemStyle.Render(a.confirmPkg.Name),
 		ManagerTagStyle.Render(a.confirmPkg.Manager),
 	)
-	buttons := fmt.Sprintf("[ %s ] [ %s ]",
-		SuccessStyle.Render("Yes (y)"),
-		ErrorStyle.Render("No (n)"),
-	)
+	yesBtn := " Yes (y) "
+	noBtn := "  No (n)  "
+	if a.confirmYes {
+		yesBtn = SuccessStyle.Background(colorSecondary).Foreground(colorBg).Render(yesBtn)
+		noBtn = DimStyle.Render("  No (n)  ")
+	} else {
+		noBtn = ErrorStyle.Background(colorError).Foreground(colorFg).Render(noBtn)
+		yesBtn = DimStyle.Render(" Yes (y) ")
+	}
+	buttons := fmt.Sprintf("[%s] [%s]", yesBtn, noBtn)
 	return DialogBoxStyle.Render(fmt.Sprintf("%s\n\n%s", msg, buttons))
+}
+
+func (a *App) overlayConfirm(main string) string {
+	popup := a.viewConfirm()
+	mainLines := strings.Split(main, "\n")
+
+	// Pad main to terminal height
+	for len(mainLines) < a.height {
+		mainLines = append(mainLines, "")
+	}
+
+	// Place popup centered in a blank canvas matching terminal size
+	canvas := lipgloss.Place(a.width, a.height,
+		lipgloss.Center, lipgloss.Center,
+		popup,
+	)
+	canvasLines := strings.Split(canvas, "\n")
+
+	var result []string
+	for i := range a.height {
+		cl := canvasLines[i]
+		trimmed := strings.TrimRight(cl, " ")
+		if trimmed != "" {
+			result = append(result, cl)
+		} else {
+			result = append(result, mainLines[i])
+		}
+	}
+	return strings.Join(result, "\n")
 }
 
 func (a *App) viewOutdated() string {
@@ -149,7 +187,7 @@ func (a *App) viewOutdated() string {
 
 	b.WriteString("\n")
 	if len(a.outdatedPkgs) > 0 {
-		b.WriteString(HelpStyle.Render("j/k: move  enter: detail  u: upgrade  U: all  esc: back"))
+		b.WriteString(HelpStyle.Render("j/k: move  r: reload  enter: detail  u: upgrade  U: all  esc: back"))
 	} else {
 		b.WriteString(HelpStyle.Render("esc: back"))
 	}
@@ -162,34 +200,20 @@ func (a *App) viewDashboard() string {
 	b.WriteString("\n\n")
 
 	if len(a.managers) == 0 {
-		b.WriteString(ErrorStyle.Render("  No managers configured. Edit ~/.config/yuman/yuman.toml"))
+		b.WriteString(ErrorStyle.Render("  no managers available"))
+		b.WriteString("\n")
+		b.WriteString(HelpStyle.Render("  edit ~/.config/yuman/yuman.toml to enable managers, then restart"))
 		b.WriteString("\n")
 		return b.String()
 	}
 
-	// Check if pacman is available for Arch grouping
-	pacmanAvail := false
-	for _, ms := range a.managers {
-		if ms.name == "pacman" && ms.available {
-			pacmanAvail = true
-			break
-		}
-	}
-
-	// Group managers: show Arch family together
 	for i, ms := range a.managers {
-		// Skip yay/paru when pacman is available (they share the same DB)
-		if pacmanAvail && isArchHelper(ms.name) {
-			continue
-		}
-
 		cursor := "  "
 		isCursor := i == a.dashCursor
 		if isCursor {
 			cursor = CursorStyle.Render("▸ ")
 		}
 
-		name := ms.name
 		avail := ""
 		if !ms.available {
 			avail = ErrorStyle.Render("(not installed)")
@@ -211,44 +235,12 @@ func (a *App) viewDashboard() string {
 			}
 		}
 
-		line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(name), avail)
+		line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(ms.name), avail)
 		if isCursor {
-			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, name)) + avail
+			line = SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, ms.name)) + avail
 		}
 		b.WriteString(line)
 		b.WriteString("\n")
-	}
-
-	// Show indented AUR helpers after pacman if pacman is available
-	if pacmanAvail {
-		for _, ms := range a.managers {
-			if isArchHelper(ms.name) {
-				cursor := "    "
-				isCursor := false
-				for idx, m := range a.managers {
-					if m.name == ms.name && idx == a.dashCursor {
-						isCursor = true
-						cursor = " " + CursorStyle.Render("▸ ")
-						break
-					}
-				}
-
-				var avail string
-				if !ms.available {
-					avail = ErrorStyle.Render("(not installed)")
-				} else {
-					avail = DescStyle.Render("(shared with pacman)")
-				}
-
-				name := "  " + ms.name
-				line := fmt.Sprintf("%s%s%s", cursor, ManagerTagStyle.Render(name), avail)
-				if isCursor {
-					line = " " + SelectedItemStyle.Render(fmt.Sprintf("%s%s", cursor, name)) + avail
-				}
-				b.WriteString(line)
-				b.WriteString("\n")
-			}
-		}
 	}
 
 	if a.dashCursor < len(a.managers) {
@@ -267,7 +259,7 @@ func (a *App) viewDashboard() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("j/k: move  enter: browse  /: search  o: outdated  ?: help  q: quit"))
+	b.WriteString(HelpStyle.Render("j/k: move  r: reload all  enter: browse  /: search  o: outdated  ?: help  q: quit"))
 	return b.String()
 }
 
@@ -276,10 +268,10 @@ func (a *App) viewInstalled() string {
 	ms := a.managers[a.selectedMgr]
 	header := fmt.Sprintf("Installed: %s", ms.name)
 	if a.filtering {
-		header += "  [filtering]"
+		header += " [filtering]"
 	}
 	if a.installedFilter.Value() != "" {
-		header += "  [" + a.installedFilter.Value() + "]"
+		header += " [" + a.installedFilter.Value() + "]"
 	}
 	b.WriteString(HeaderStyle.Render(header))
 	b.WriteString("\n\n")
@@ -290,15 +282,17 @@ func (a *App) viewInstalled() string {
 		b.WriteString("\n\n")
 	}
 
-	if len(a.installedPkgs) == 0 && len(a.installedCached) == 0 {
+	switch {
+	case len(a.installedPkgs) == 0 && len(a.installedCached) == 0:
 		b.WriteString(HelpStyle.Render("  loading packages..."))
-		b.WriteString("\n")
-	} else {
+	case len(a.installedPkgs) == 0:
+		b.WriteString(DimStyle.Render("  no packages found"))
+	default:
 		b.WriteString(a.installedTable.View())
 	}
-
 	b.WriteString("\n")
-	b.WriteString(HelpStyle.Render("/: filter  o: outdated  j/k: move  enter: detail  u: upgrade  x: remove  esc: back"))
+
+	b.WriteString(HelpStyle.Render("/: filter  r: reload  o: outdated  j/k: move  enter: detail  u: upgrade  x: remove  esc: back"))
 	return b.String()
 }
 
@@ -306,11 +300,6 @@ func (a *App) viewSearch() string {
 	var b strings.Builder
 
 	headerText := "Search Packages"
-	if a.searchInputFocused {
-		headerText += "  [input]"
-	} else if len(a.searchPkgs) > 0 {
-		headerText += "  [results]"
-	}
 	if a.searchFilterInstalled {
 		headerText += "  [installed only]"
 	}
@@ -351,19 +340,19 @@ func (a *App) viewSearch() string {
 	} else if len(a.searchPkgs) > 0 {
 		b.WriteString(a.searchTable.View())
 	} else if a.searchInput.Value() != "" && !a.searching {
-		b.WriteString(HelpStyle.Render("  no results found"))
+		b.WriteString(DimStyle.Render("  no results for \"" + a.searchInput.Value() + "\""))
+		b.WriteString("\n")
+		b.WriteString(HelpStyle.Render("  try a different query, or press / to search by name"))
 		b.WriteString("\n")
 	} else {
-		b.WriteString(HelpStyle.Render("  type a query and press enter"))
+		b.WriteString(DimStyle.Render("  search across all package managers at once"))
+		b.WriteString("\n")
+		b.WriteString(HelpStyle.Render("  type a query and press enter to search"))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	if a.searchInputFocused {
-		b.WriteString(HelpStyle.Render("enter: search  tab: results  esc: back"))
-	} else {
-		b.WriteString(HelpStyle.Render("j/k: move  ctrl+d/u: half-page  enter: detail  i: install  f: filter  tab: input  esc: back"))
-	}
+	b.WriteString(HelpStyle.Render("type to search  j/k: navigate  enter: detail  i: install  f: filter  esc: back"))
 	return b.String()
 }
 
@@ -414,6 +403,8 @@ func (a *App) viewDuplicatesView() string {
 
 	if len(a.duplicatesGroups) == 0 {
 		b.WriteString(SuccessStyle.Render("  no duplicates found"))
+		b.WriteString("\n")
+		b.WriteString(HelpStyle.Render("  packages installed from multiple managers will appear here"))
 		b.WriteString("\n")
 	} else {
 		for _, g := range a.duplicatesGroups {

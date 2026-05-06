@@ -141,17 +141,3 @@ func splitZyp(line string) []string {
 	}
 	return parts
 }
-func (z *zypper) InstallCmd(pkg string) (string, []string) {
-	return "zypper", []string{"install", "-y", pkg}
-}
-
-func (z *zypper) RemoveCmd(pkg string) (string, []string) {
-	return "zypper", []string{"remove", "-y", pkg}
-}
-
-func (z *zypper) UpgradeCmd(pkg string) (string, []string) {
-	if pkg != "" {
-		return "zypper", []string{"update", "-y", pkg}
-	}
-	return "zypper", []string{"update", "-y"}
-}

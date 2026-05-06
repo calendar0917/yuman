@@ -157,15 +157,3 @@ func parseLines(data []byte, mgr string) []model.Package {
 	}
 	return pkgs
 }
-
-func (p *pip) InstallCmd(pkg string) (string, []string) {
-	return "pip", []string{"install", pkg}
-}
-
-func (p *pip) RemoveCmd(pkg string) (string, []string) {
-	return "pip", []string{"uninstall", "-y", pkg}
-}
-
-func (p *pip) UpgradeCmd(pkg string) (string, []string) {
-	return "pip", []string{"install", "--upgrade", pkg}
-}

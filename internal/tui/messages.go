@@ -83,7 +83,6 @@ type actionDoneMsg struct {
 	action  string
 	pkgName string
 	err     error
-	output  []string
 }
 
 // operationOutputMsg carries a line of streaming output.
@@ -101,4 +100,9 @@ type backupMsg struct {
 	action string // "export" or "import"
 	path   string
 	err    error
+}
+
+// debouncedSearchMsg triggers a search after a debounce delay.
+type debouncedSearchMsg struct {
+	query string
 }

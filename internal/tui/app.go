@@ -48,7 +48,6 @@ type App struct {
 	searchPkgs            []model.Package
 	searching             bool
 	searchLoading         int
-	searchInputFocused    bool
 	searchFilterInstalled bool
 	searchFilterManager   string
 
@@ -155,6 +154,7 @@ func (a *App) Init() tea.Cmd {
 
 // loadAllManagers loads installed packages from all available managers in parallel.
 func (a *App) loadAllManagers() tea.Cmd {
+	a.installedCached = nil
 	for i := range a.managers {
 		a.managers[i].outdatedCount = -1
 	}
@@ -264,6 +264,8 @@ func (a *App) reloadManager(idx int) tea.Cmd {
 	a.managers[idx].count = -1
 	a.managers[idx].outdatedCount = -1
 	a.managers[idx].err = nil
+	a.installedCached = nil
+	a.loading++
 	name := ms.name
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(),
@@ -373,6 +375,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.installedCached = a.installedPkgs
 		a.installedFilter.SetValue("")
 		a.filtering = false
+		// Update dashboard count for this manager
+		msName := a.managers[a.selectedMgr].name
+		for i := range a.managers {
+			if a.managers[i].name == msName {
+				a.managers[i].count = len(msg.packages)
+				a.managers[i].outdatedCount = len(msg.outdated)
+				a.managers[i].err = nil
+				break
+			}
+		}
 		a.updateInstalledTable()
 		return a, nil
 
@@ -402,7 +414,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.operationView.SetContent(strings.Join(a.operationLog, "\n"))
 		a.operationView.GotoBottom()
-		return a, nil
+		a.state = viewDashboard
+		a.installedCached = nil
+		return a, tea.Batch(a.spinner.Tick, a.loadAllManagers())
 
 	case backupMsg:
 		if msg.err != nil {
@@ -412,14 +426,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-		case duplicatesMsg:
-			a.duplicatesGroups = msg.groups
-			a.statusMsg = fmt.Sprintf("found %d duplicate groups across managers", len(msg.groups))
+	case duplicatesMsg:
+		a.duplicatesGroups = msg.groups
+		a.statusMsg = fmt.Sprintf("found %d duplicate groups across managers", len(msg.groups))
+		return a, nil
+
+	case debouncedSearchMsg:
+		if strings.TrimSpace(msg.query) == "" {
 			return a, nil
 		}
-
-		return a, tea.Batch(cmds...)
+		a.searching = true
+		a.statusMsg = "searching..."
+		return a, a.doSearch(msg.query)
 	}
+
+	return a, tea.Batch(cmds...)
+}
 
 func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.helpOpen {
@@ -459,14 +481,13 @@ func (a *App) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 	case "/":
-		if a.state != viewSearch {
+		if a.state != viewSearch && a.state != viewInstalled {
 			a.state = viewSearch
-			a.searchInputFocused = true
 			a.searchInput.Focus()
 			return a, textinput.Blink
 		}
-	}
 
+	}
 	switch a.state {
 	case viewDashboard:
 		return a.handleDashboardKey(key)
@@ -600,13 +621,20 @@ func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 	case "u":
 		row := a.installedTable.SelectedRow()
 		if row != nil && len(row) > 0 {
-			a.openConfirm("upgrade", row[0])
+			name := cleanPkgName(row[0]); a.openConfirm("upgrade", name, a.managers[a.selectedMgr].name)
 		}
 	case "x":
 		row := a.installedTable.SelectedRow()
 		if row != nil && len(row) > 0 {
-			a.openConfirm("remove", row[0])
+			name := cleanPkgName(row[0]); a.openConfirm("remove", name, a.managers[a.selectedMgr].name)
 		}
+	case "r":
+		a.statusMsg = "reloading..."
+		a.installedCached = nil
+		a.managers[a.selectedMgr].count = -1
+		a.managers[a.selectedMgr].outdatedCount = -1
+		a.managers[a.selectedMgr].err = nil
+		return a, a.buildInstalledTable()
 	case "o":
 		a.state = viewOutdated
 		a.outdatedMgrFilter = a.managers[a.selectedMgr].name
@@ -617,88 +645,79 @@ func (a *App) handleInstalledKey(key string, msg tea.KeyPressMsg) (tea.Model, te
 }
 
 func (a *App) handleSearchKey(key string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if key == "tab" {
-		if len(a.searchPkgs) > 0 {
-			a.searchInputFocused = !a.searchInputFocused
-			if a.searchInputFocused {
-				a.searchInput.Focus()
-				return a, textinput.Blink
-			}
-			a.searchInput.Blur()
-		}
-		return a, nil
-	}
-
-	if a.searchInputFocused {
+	// Navigation keys when we have results — don't pass to textinput
+	if len(a.searchPkgs) > 0 {
 		switch key {
-		case "enter":
-			query := strings.TrimSpace(a.searchInput.Value())
-			if query != "" && !a.searching {
-				a.searching = true
-				a.statusMsg = "searching..."
-				return a, a.doSearch(query)
+		case "up", "down", "k", "j":
+			a.searchTable, _ = a.searchTable.Update(msg)
+			return a, nil
+		case "ctrl+d":
+			dm := tea.KeyPressMsg{Code: tea.KeyDown}
+			for range 5 {
+				a.searchTable, _ = a.searchTable.Update(dm)
 			}
 			return a, nil
-		default:
-			var cmd tea.Cmd
-			a.searchInput, cmd = a.searchInput.Update(msg)
-			return a, cmd
-		}
-	}
-
-	switch key {
-	case "ctrl+d":
-		if len(a.searchPkgs) > 0 {
-			downMsg := tea.KeyPressMsg{Code: tea.KeyDown}
-			for i := 0; i < 5; i++ {
-				a.searchTable, _ = a.searchTable.Update(downMsg)
+		case "ctrl+u":
+			um := tea.KeyPressMsg{Code: tea.KeyUp}
+			for range 5 {
+				a.searchTable, _ = a.searchTable.Update(um)
 			}
-		}
-	case "ctrl+u":
-		if len(a.searchPkgs) > 0 {
-			upMsg := tea.KeyPressMsg{Code: tea.KeyUp}
-			for i := 0; i < 5; i++ {
-				a.searchTable, _ = a.searchTable.Update(upMsg)
-			}
-		}
-	case "enter", "d":
-		if len(a.searchPkgs) > 0 {
+			return a, nil
+		case "enter", "d":
 			row := a.searchTable.SelectedRow()
 			if row != nil && len(row) > 0 {
 				a.openDetail(row[0], row[2])
 			}
-		}
-	case "up", "k":
-		if len(a.searchPkgs) > 0 {
-			a.searchTable, _ = a.searchTable.Update(msg)
-		}
-	case "down", "j":
-		if len(a.searchPkgs) > 0 {
-			a.searchTable, _ = a.searchTable.Update(msg)
-		}
-	case "i":
-		if len(a.searchPkgs) > 0 {
+			return a, nil
+		case "i":
 			row := a.searchTable.SelectedRow()
 			if row != nil && len(row) > 0 {
-				a.openConfirm("install", row[0])
+				a.openConfirm("install", row[0], row[2])
 			}
+			return a, nil
 		}
-	case "f":
+	}
+
+	// Enter executes immediate search
+	if key == "enter" {
+		query := strings.TrimSpace(a.searchInput.Value())
+		if query != "" && !a.searching {
+			a.searching = true
+			a.statusMsg = "searching..."
+			return a, a.doSearch(query)
+		}
+		return a, nil
+	}
+
+	// Filter keys
+	if key == "f" {
 		a.searchFilterInstalled = !a.searchFilterInstalled
 		a.updateSearchTable()
-	case "0":
+		return a, nil
+	}
+	if key == "0" {
 		a.searchFilterManager = ""
 		a.updateSearchTable()
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		// Filter by manager: pick the nth available manager
+		return a, nil
+	}
+	if key >= "1" && key <= "9" {
 		idx := int(key[0] - '1')
 		availMgrs := a.availableManagerNames()
 		if idx < len(availMgrs) {
 			a.searchFilterManager = availMgrs[idx]
 		}
 		a.updateSearchTable()
+		return a, nil
 	}
-	return a, nil
+
+	// Update input and trigger debounced search
+	var cmd tea.Cmd
+	a.searchInput, cmd = a.searchInput.Update(msg)
+	query := strings.TrimSpace(a.searchInput.Value())
+	if query != "" {
+		return a, tea.Batch(cmd, a.debouncedSearch(query))
+	}
+	return a, cmd
 }
 
 func (a *App) availableManagerNames() []string {
@@ -735,7 +754,7 @@ func (a *App) handleOutdatedKey(key string, msg tea.KeyPressMsg) (tea.Model, tea
 	case "u":
 		row := a.outdatedTable.SelectedRow()
 		if row != nil && len(row) > 0 {
-			a.openConfirm("upgrade", row[0])
+			name := cleanPkgName(row[0]); a.openConfirm("upgrade", name, row[3])
 		}
 	case "U":
 		if len(a.outdatedPkgs) > 0 {
@@ -756,6 +775,9 @@ func (a *App) handleOutdatedKey(key string, msg tea.KeyPressMsg) (tea.Model, tea
 		a.outdatedMgrFilter = ""
 		a.statusMsg = "ready"
 		return a, nil
+	case "r":
+		a.statusMsg = "reloading..."
+		return a, a.loadAllManagers()
 	}
 	return a, nil
 }
@@ -778,10 +800,15 @@ func (a *App) handleConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-func (a *App) openConfirm(action, pkgName string) {
+func cleanPkgName(n string) string {
+	n = strings.TrimPrefix(n, "⬆ ")
+	return n
+}
+
+func (a *App) openConfirm(action, pkgName, mgrName string) {
 	a.confirmOpen = true
 	a.confirmAct = action
-	a.confirmPkg = model.Package{Name: pkgName, Manager: a.managers[a.selectedMgr].name}
+	a.confirmPkg = model.Package{Name: pkgName, Manager: mgrName}
 	a.confirmYes = true
 }
 
@@ -826,16 +853,15 @@ func (a *App) handleDetailKey(key string) (tea.Model, tea.Cmd) {
 		a.state = a.prevState
 		return a, nil
 	case "i":
-		a.openConfirm("install", a.detailPkg.Name)
+		a.openConfirm("install", a.detailPkg.Name, a.detailPkg.Manager)
 	case "u":
-		a.openConfirm("upgrade", a.detailPkg.Name)
+		a.openConfirm("upgrade", a.detailPkg.Name, a.detailPkg.Manager)
 	case "x":
-		a.openConfirm("remove", a.detailPkg.Name)
+		a.openConfirm("remove", a.detailPkg.Name, a.detailPkg.Manager)
 	}
 	return a, nil
 }
 
-// executeAction dispatches a manager operation using the backend.
 func (a *App) executeAction(action string, pkg model.Package) tea.Cmd {
 	m := a.backend.Manager(pkg.Manager)
 	if m == nil {
@@ -915,6 +941,13 @@ func (a *App) doSearch(query string) tea.Cmd {
 		return nil
 	}
 	return tea.Batch(cmds...)
+}
+
+// debouncedSearch waits 300ms then fires the search.
+func (a *App) debouncedSearch(query string) tea.Cmd {
+	return tea.Tick(300*time.Millisecond, func(t time.Time) tea.Msg {
+		return debouncedSearchMsg{query: query}
+	})
 }
 
 // buildInstalledTable triggers an async load of installed+outdated packages.
@@ -1022,7 +1055,7 @@ func (a *App) rebuildInstalledFromCache() {
 		a.installedPkgs = a.installedCached
 	} else {
 		lower := strings.ToLower(query)
-		filtered := a.installedCached[:0]
+		filtered := make([]model.Package, 0, len(a.installedCached))
 		for _, p := range a.installedCached {
 			if strings.Contains(strings.ToLower(p.Name), lower) {
 				filtered = append(filtered, p)
@@ -1168,16 +1201,15 @@ func (a *App) View() tea.View {
 			b.WriteString(a.viewEnvironmentView())
 		}
 
-		if a.confirmOpen {
-			b.WriteString("\n")
-			b.WriteString(a.viewConfirm())
-		}
-
 		b.WriteString("\n")
 		b.WriteString(a.viewStatus())
 	}
 
-	v := tea.NewView(WindowStyle.Width(a.width - 2).Render(b.String()))
+	main := WindowStyle.Width(a.width - 2).Render(b.String())
+		if a.confirmOpen {
+			main = a.overlayConfirm(main)
+		}
+		v := tea.NewView(main)
 	v.AltScreen = true
 	return v
 }

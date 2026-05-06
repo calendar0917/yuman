@@ -123,17 +123,3 @@ func isArch(s string) bool {
 	}
 	return false
 }
-func (d *dnf) InstallCmd(pkg string) (string, []string) {
-	return "dnf", []string{"install", "-y", pkg}
-}
-
-func (d *dnf) RemoveCmd(pkg string) (string, []string) {
-	return "dnf", []string{"remove", "-y", pkg}
-}
-
-func (d *dnf) UpgradeCmd(pkg string) (string, []string) {
-	if pkg != "" {
-		return "dnf", []string{"upgrade", "-y", pkg}
-	}
-	return "dnf", []string{"upgrade", "-y"}
-}

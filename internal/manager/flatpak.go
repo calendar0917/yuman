@@ -110,18 +110,3 @@ func parseFlatpakSearch(data []byte) []model.Package {
 	}
 	return pkgs
 }
-
-func (f *flatpak) InstallCmd(pkg string) (string, []string) {
-	return "flatpak", []string{"install", "-y", pkg}
-}
-
-func (f *flatpak) RemoveCmd(pkg string) (string, []string) {
-	return "flatpak", []string{"uninstall", "-y", pkg}
-}
-
-func (f *flatpak) UpgradeCmd(pkg string) (string, []string) {
-	if pkg != "" {
-		return "flatpak", []string{"update", "-y", pkg}
-	}
-	return "flatpak", []string{"update", "-y"}
-}
